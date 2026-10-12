@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Copy to recorder.config.json (gitignored) and fill in.",
+    "drive_uuid: Linux  -> lsblk -o NAME,UUID,LABEL,FSTYPE,MOUNTPOINT",
+    "            macOS  -> diskutil info /Volumes/<name>   ('Volume UUID')",
+    "Credentials are NEVER stored here. Set <credentials_env>_USER and",
+    "<credentials_env>_PASS in the environment, or let it fall back to the",
+    ".camera_config that scripts/capture.sh already writes."
+  ],
+
+  "drive_uuid": "00000000-0000-0000-0000-000000000000",
+
+  "segment_seconds": 300,
+  "max_size_bytes": 0,
+  "fragmented_mp4": true,
+
+  "min_free_gb": 20.0,
+  "retention": "delete_oldest",
+
+  "rtsp_latency_ms": 200,
+  "ntp_sync": true,
+  "reconnect_max_backoff_s": 30.0,
+
+  "cameras": {
+    "gatf-lot-01": {
+      "ip": "192.168.1.100",
+      "path": "/axis-media/media.amp",
+      "credentials_env": "CAM01",
+      "query": ""
+    }
+  }
+}

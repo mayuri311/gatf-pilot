@@ -53,14 +53,19 @@ def upload_event(event_dir):
     storage_path = f"{payload['event_id']}.jpg"
 
     supabase = get_client()
+    # upsert, because the image goes up before the row insert: if that insert
+    # fails the folder keeps no UPLOADED_MARKER and gets retried, by which point
+    # the object already exists and a plain upload would 409 on the duplicate.
     with open(image_path, "rb") as f:
         supabase.storage.from_(bucket).upload(
-            storage_path, f.read(), {"content-type": "image/jpeg"}
+            storage_path, f.read(), {"content-type": "image/jpeg", "upsert": "true"}
         )
 
     row = {k: v for k, v in payload.items() if k != "image_filename"}
     row["image_path"] = storage_path
-    supabase.table("events").insert(row).execute()
+    # likewise upsert (conflict target is the event_id primary key) so a retry
+    # after a partial failure re-settles the row instead of erroring on it.
+    supabase.table("events").upsert(row).execute()
 
     (event_dir / UPLOADED_MARKER).touch()
     return True

@@ -54,8 +54,8 @@ from dotenv import load_dotenv
 from fast_alpr import ALPR
 from ultralytics import YOLO
 
-from occupancy_demo import side_of_line, segments_near
-from supabase_sync import EventUploader
+from scripts.occupancy_demo import side_of_line, segments_near
+from scripts.supabase_sync import EventUploader
 
 load_dotenv()
 

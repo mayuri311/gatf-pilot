@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.111.0",
+    "@anthropic-ai/sdk": "^0.117.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@supabase/supabase-js": "^2.112.3",
     "next": "16.2.12",
     "react": "19.2.4",
     "react-dom": "19.2.4",

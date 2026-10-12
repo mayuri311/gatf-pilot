@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from supabase_sync import upload_event
+from scripts.supabase_sync import upload_event
 
 
 def run(events_dir):

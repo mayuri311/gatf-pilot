@@ -1,0 +1,46 @@
+# ByteTrack config tuned for LICENSE PLATES rather than the whole-object targets
+# the stock ultralytics bytetrack.yaml assumes.
+#
+# Plates are small (~25-90 px wide) and, in this camera's geometry, can travel
+# ~8.5 px/frame - roughly a third of their own height every frame. The stock
+# association gate is calibrated for large, slow-moving boxes and silently
+# rejects the correct match for a plate, which is what shattered a single plate
+# into tracks #11/#13/#17/#19 in the 2026-08-14 run.
+#
+# Measured on capture_20260813_205719.mp4, frames 600-740, counting distinct
+# track IDs assigned to one physical plate (1 = perfect permanence):
+#
+#   stock bytetrack.yaml ............................. 4 ids
+#   stock + track_low_thresh=0.05 .................... 4 ids  (no effect)
+#   stock + track_buffer=90 .......................... 4 ids  (no effect)
+#   stock + new_track_thresh=0.50 .................... 3 ids
+#   stock + match_thresh=0.95 ........................ 2 ids  <-- dominant
+#   stock + fuse_score=false ......................... 2 ids  <-- dominant
+#   all of the above together ........................ 2 ids
+#
+# The floor of 2 is not a tuning failure: after frame ~679 the plate stops
+# being detectable at ANY confidence as it exits, so the tail is a genuinely
+# separate observation rather than a lost association.
+
+tracker_type: bytetrack
+
+track_high_thresh: 0.25   # stock. First-stage association threshold.
+track_low_thresh: 0.1     # stock. Ablation showed no effect for this target.
+new_track_thresh: 0.50    # raised from 0.25: only confident detections may START
+                          # a track. Weak boxes can still EXTEND one, so this
+                          # suppresses junk tracks without harming permanence.
+track_buffer: 60          # raised from 30 (2s @30fps). No measured effect on the
+                          # observed failure, kept as cheap insurance for longer
+                          # occlusions than this clip happens to contain.
+
+# The two that actually fixed it. Both widen the association gate, which was
+# too tight for a small box that barely overlaps itself between frames:
+match_thresh: 0.95        # from 0.80. Gate is on IoU distance, so this accepts
+                          # matches down to IoU > 0.05. A 28 px-tall plate moving
+                          # 8.5 px/frame overlaps itself far less than the stock
+                          # 0.20 minimum demands.
+fuse_score: false         # from true. When true, IoU distance is scaled by
+                          # detection confidence, so a correct match on a
+                          # motion-blurred plate (conf ~0.44) is pushed past the
+                          # threshold and rejected. Fusing score punishes exactly
+                          # the frames where permanence matters most.

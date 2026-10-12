@@ -4,7 +4,7 @@
 
 create table events (
   event_id uuid primary key,
-  event_type text not null check (event_type in ('entry', 'exit')),
+  event_type text not null check (event_type in ('entry', 'exit', 'plate_track_finalized')),
   timestamp_utc timestamptz not null,
   source text,
   track_id integer,
@@ -18,6 +18,17 @@ create table events (
   plate_confidence_per_char jsonb,
   plate_detection_confidence real,
   plate_bounding_box jsonb,
+  -- plate_track_finalized only: the frame span of one tracked plate, and how
+  -- many of those frames actually produced text / fed the consensus vote.
+  frame_first integer,
+  frame_last integer,
+  num_frames_tracked integer,
+  num_frames_with_text integer,
+  num_frames_used_for_consensus integer,
+  representative_frame_index integer,
+  -- every per-frame OCR attempt: [{frame_index, text, confidence}, ...]. Read as
+  -- a whole blob when auditing a plate_text, never queried per-read.
+  reads jsonb,
   -- storage object path within the private bucket, e.g. "<event_id>.jpg" -
   -- NOT a public URL. Generate a signed URL on demand when you need to view
   -- one: supabase.storage.from_(BUCKET).create_signed_url(image_path, 3600)
