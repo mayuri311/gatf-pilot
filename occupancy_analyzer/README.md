@@ -2,6 +2,8 @@
 
 Plate-recognition parking occupancy for the GATF lot: an inbound camera and an outbound camera emit plate events. This app pairs them into parking sessions, keeps an **honest occupancy estimate with an uncertainty band**, and serves a realtime dashboard.
 
+**New here? Start with [GETTING_STARTED.md](GETTING_STARTED.md)** for simple simulation and real-mode steps.
+
 Design: [`../plan/`](../plan/README.md) (start with docs 12, 13 and 14). Integration contract: [`docs/CONTRACT.md`](docs/CONTRACT.md).
 
 ```
