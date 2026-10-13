@@ -1,0 +1,18 @@
+name: staff_override_survives
+id: 13
+title: Staff override survives recompute
+mode: partial
+description: >
+  QRS4821's exit is misread badly enough not to auto-match; an admin pairs it
+  manually at 10:30. A late event (captured 09:00, uploaded 12:00) forces a
+  re-run of the sessionizer -> the manual pair is preserved.
+  The resolve_match action needs an admin JWT at replay time.
+expect:
+  manual_pair: {entry_plate: QRS4821, exit_plate: XRS4021, match_method: manual}
+  preserved_after_late_event: true
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: QRS4821}
+  - {at: "09:00:00", camera: inbound_cam_01, plate: LMN5566, late: 3h}
+  - {at: "10:00:00", camera: outbound_cam_01, plate: QRS4821, observe_as: XRS4021}
+actions:
+  - {at: "10:30:00", action: resolve_match, exit_plate: XRS4021, entry_plate: QRS4821, note: "scenario 13 manual pair"}

@@ -1,0 +1,12 @@
+name: bounce
+id: 14
+title: Bounce
+mode: replay
+description: In and out within 90 s -> counted as a bounce, excluded from dwell stats by default.
+expect:
+  sessions: 1
+  is_bounce: true
+  final_occupancy: 0
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: BNC1990}
+  - {at: "08:01:30", camera: outbound_cam_01, plate: BNC1990}

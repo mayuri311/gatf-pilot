@@ -1,0 +1,12 @@
+name: ocr_near_miss
+id: 2
+title: OCR near-miss
+mode: replay
+description: Entry reads Z94PVE, exit reads Z94PWE (V/W confusion) -> fuzzy match.
+expect:
+  sessions: 1
+  match_method: fuzzy
+  final_occupancy: 0
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: Z94PVE}
+  - {at: "10:15:00", camera: outbound_cam_01, plate: Z94PVE, observe_as: Z94PWE}

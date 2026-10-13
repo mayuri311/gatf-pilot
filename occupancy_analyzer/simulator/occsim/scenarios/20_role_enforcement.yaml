@@ -1,0 +1,18 @@
+name: role_enforcement
+id: 20
+title: Role enforcement
+mode: engine_only
+description: >
+  Auth/RLS check, covered by pgTAP and the web tests: a staff JWT calling
+  resolve_match, reconcile_commit, correct_plate or ack_alert gets 42501; the
+  same calls succeed for admin. This fixture only creates a review item
+  (fuzzy_pending twins) for those calls to act on; replay never executes
+  role-specific calls.
+expect:
+  staff_denied: [resolve_match, reconcile_commit, correct_plate, ack_alert]
+  admin_allowed: [resolve_match, reconcile_commit, correct_plate, ack_alert]
+  review_items: 1
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: ROL1234}
+  - {at: "08:05:00", camera: inbound_cam_01, plate: ROL1284}
+  - {at: "12:00:00", camera: outbound_cam_01, plate: ROL1234, observe_as: ROL12B4}

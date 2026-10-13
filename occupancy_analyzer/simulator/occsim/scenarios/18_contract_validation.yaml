@@ -1,0 +1,17 @@
+name: contract_validation
+id: 18
+title: Contract validation
+mode: replay
+description: >
+  Three bad events: schema_version 1, unknown camera_id, captured_at_utc 10 min
+  in the future (device clock skew). They are quarantined in ingest_errors /
+  flagged as skew; occupancy is unchanged. One valid car keeps the lot busy.
+expect:
+  ingest_errors: 2
+  skew_flagged: 1
+  final_occupancy: 1
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: VAL1000}
+  - {at: "08:10:00", camera: inbound_cam_01, plate: BAD1001, truth: false, override: {schema_version: 1}}
+  - {at: "08:20:00", camera: inbound_cam_01, plate: BAD1002, truth: false, override: {camera_id: inbound_cam_99}}
+  - {at: "08:30:00", camera: inbound_cam_01, plate: BAD1003, truth: false, captured_shift: 10m}

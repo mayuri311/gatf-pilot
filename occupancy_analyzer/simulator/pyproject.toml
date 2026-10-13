@@ -1,0 +1,31 @@
+[project]
+name = "occsim"
+version = "0.1.0"
+description = "Offline camera simulator, replayer and evaluator for the GATF parking-occupancy system"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "pillow>=10.0",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+occsim = "occsim.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["occsim"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"occsim/scenarios" = "occsim/scenarios"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,16 @@
+name: missed_entry
+id: 7
+title: Missed entry
+mode: replay
+description: >
+  B parks normally. A's entry is missed; A's exit has no candidate -> orphan
+  exit, the best estimate decrements and the band widens.
+expect:
+  orphan_exits: 1
+  true_final_occupancy: 1
+  s1_final: 0
+  band_widens: true
+steps:
+  - {at: "07:00:00", camera: inbound_cam_01, plate: MRT7731}
+  - {at: "08:00:00", camera: inbound_cam_01, plate: GVN4410, emit: false}
+  - {at: "10:00:00", camera: outbound_cam_01, plate: GVN4410}

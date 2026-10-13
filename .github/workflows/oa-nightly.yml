@@ -1,0 +1,37 @@
+# occupancy_analyzer — nightly ops for the Supabase Free project (plan doc 12 §4):
+#   1. logical backup (Free tier has no backups)
+#   2. delete plate crops older than 14 days (Storage API)
+# Secrets: OA_DATABASE_URL (session pooler URI), SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+name: occupancy-analyzer-nightly
+
+on:
+  schedule:
+    - cron: "30 8 * * *"   # 04:30 ET (EDT)
+  workflow_dispatch: {}
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pg_dump 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+      - name: Backup
+        env:
+          DATABASE_URL: ${{ secrets.OA_DATABASE_URL }}
+        run: bash occupancy_analyzer/tools/backup.sh backups
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oa-backup-${{ github.run_id }}
+          path: backups/
+          retention-days: 14
+      - name: Crop retention
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python3 occupancy_analyzer/tools/crop_retention.py --days 14

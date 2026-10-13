@@ -1,0 +1,14 @@
+name: fragmented_track
+id: 4
+title: Fragmented track
+mode: replay
+description: Two entry reads 4 s apart (Z94PVE, then the fragment 94PVE) -> one pass.
+expect:
+  entry_passes: 1
+  possible_fragment: true
+  sessions: 1
+  final_occupancy: 0
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: Z94PVE}
+  - {at: "08:00:04", camera: inbound_cam_01, plate: Z94PVE, observe_as: 94PVE, fragment_of_previous: true}
+  - {at: "10:00:00", camera: outbound_cam_01, plate: Z94PVE}

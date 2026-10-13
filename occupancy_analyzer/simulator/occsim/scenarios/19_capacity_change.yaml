@@ -1,0 +1,24 @@
+name: capacity_change
+id: 19
+title: Capacity change
+mode: partial
+description: >
+  Capacity goes 100 -> 120 at 09:00. % full before uses 100, after uses 120.
+  The set_capacity action is best-effort via PostgREST (lots.capacity +
+  lot_capacity_history); normally this happens through config sync.
+expect:
+  pct_at_0830: 0.05
+  pct_at_1030: 0.0833
+steps:
+  - bulk:
+      camera: inbound_cam_01
+      at: "08:00:00"
+      every: 2m
+      plates: [CAP1001, CAP1002, CAP1003, CAP1004, CAP1005]
+  - bulk:
+      camera: inbound_cam_01
+      at: "10:00:00"
+      every: 2m
+      plates: [CAP2001, CAP2002, CAP2003, CAP2004, CAP2005]
+actions:
+  - {at: "09:00:00", action: set_capacity, capacity: 120}

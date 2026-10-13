@@ -1,0 +1,17 @@
+name: happy_path
+id: 1
+title: Happy path
+mode: replay
+description: 3 cars in, 3 out, exact plates on both cameras.
+expect:
+  sessions: 3
+  statuses: {closed: 3}
+  match_method: exact
+  final_occupancy: 0
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: HKT4821}
+  - {at: "08:04:30", camera: inbound_cam_01, plate: A12BCD}
+  - {at: "08:10:15", camera: inbound_cam_01, plate: 1AB2345}
+  - {at: "12:05:00", camera: outbound_cam_01, plate: A12BCD}
+  - {at: "16:45:10", camera: outbound_cam_01, plate: HKT4821}
+  - {at: "17:02:40", camera: outbound_cam_01, plate: 1AB2345}

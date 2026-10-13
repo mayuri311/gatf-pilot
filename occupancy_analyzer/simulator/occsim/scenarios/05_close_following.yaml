@@ -1,0 +1,14 @@
+name: close_following
+id: 5
+title: Two cars close together
+mode: replay
+description: Two different plates 2 s apart -> two passes (no tailgate merge, D10).
+expect:
+  entry_passes: 2
+  sessions: 2
+  occupancy_after_entries: 2
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: HJK2231}
+  - {at: "08:00:02", camera: inbound_cam_01, plate: TRW8890}
+  - {at: "11:00:00", camera: outbound_cam_01, plate: HJK2231}
+  - {at: "11:20:00", camera: outbound_cam_01, plate: TRW8890}

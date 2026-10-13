@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "event_id": "1c72cbed-d005-4498-b09c-f786374757fc",
+  "event_type": "plate_track_finalized",
+  "camera_id": "inbound_cam_01",
+  "device_id": "jetson-in-01",
+  "captured_at_utc": "2026-08-14T14:24:42.509093+00:00",
+  "timestamp_utc": "2026-08-14T14:24:47.042426+00:00",
+  "source": "rtsp://inbound-cam.local/axis-media/media.amp",
+  "track_id": 73,
+  "frame_first": 4791,
+  "frame_last": 4942,
+  "num_frames_tracked": 152,
+  "num_frames_with_text": 138,
+  "num_frames_used_for_consensus": 120,
+  "plate_text": "Z94PVE",
+  "plate_confidence": 0.9697,
+  "plate_confidence_per_char": [
+    0.9537,
+    0.9872,
+    0.9886,
+    0.955,
+    0.9409,
+    0.9931
+  ],
+  "plate_detection_confidence": 0.8003,
+  "plate_bounding_box": {
+    "x1": 904,
+    "y1": 790,
+    "x2": 996,
+    "y2": 840
+  },
+  "representative_frame_index": 4866,
+  "reads": [
+    {
+      "frame_index": 4791,
+      "text": "",
+      "confidence": 0.9952,
+      "clean": false
+    },
+    {
+      "frame_index": 4795,
+      "text": "191316",
+      "confidence": 0.4479,
+      "clean": true
+    },
+    {
+      "frame_index": 4806,
+      "text": "Z54PWE",
+      "confidence": 0.8766,
+      "clean": true
+    },
+    {
+      "frame_index": 4810,
+      "text": "Z94PVE",
+      "confidence": 0.9574,
+      "clean": true
+    },
+    {
+      "frame_index": 4818,
+      "text": "Z94PVE",
+      "confidence": 0.9998,
+      "clean": true
+    },
+    {
+      "frame_index": 4848,
+      "text": "294PWE",
+      "confidence": 0.9484,
+      "clean": true
+    },
+    {
+      "frame_index": 4866,
+      "text": "Z94PVE",
+      "confidence": 0.9999,
+      "clean": true
+    },
+    {
+      "frame_index": 4895,
+      "text": "294PVE",
+      "confidence": 0.9393,
+      "clean": true
+    },
+    {
+      "frame_index": 4923,
+      "text": "L44YWE",
+      "confidence": 0.7676,
+      "clean": true
+    },
+    {
+      "frame_index": 4942,
+      "text": "",
+      "confidence": 0.8949,
+      "clean": false
+    }
+  ],
+  "image_filename": "plate.jpg"
+}

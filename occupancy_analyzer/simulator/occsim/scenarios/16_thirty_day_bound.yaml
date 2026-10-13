@@ -1,0 +1,19 @@
+name: thirty_day_bound
+id: 16
+title: 30-day bound
+mode: partial
+date: "2026-09-10"
+days: 32
+heartbeats: false
+description: >
+  A session left open for 31 days becomes `expired` when the retention job
+  runs (the only automatic closure) and its plate is pseudonymized. A second
+  car on day 31 advances "now". Run the retention job (pg_cron) after replay;
+  with --rebase-now the expiry is relative to the rebased dates.
+expect:
+  status_after_retention: expired
+  plate_pseudonymized: true
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: OLD3001}
+  - {at: "08:00:00", day: 31, camera: inbound_cam_01, plate: NEW3131}
+  - {at: "09:00:00", day: 31, camera: outbound_cam_01, plate: NEW3131}

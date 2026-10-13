@@ -1,0 +1,16 @@
+name: ambiguous_twins
+id: 3
+title: Ambiguous twins
+mode: replay
+description: >
+  ABC1234 and ABC1284 are both parked; the exit of ABC1234 reads ABC12B4,
+  which is equally close to both -> fuzzy_pending, never auto-matched.
+expect:
+  exit_session_status: pending_review
+  match_method: fuzzy_pending
+  auto_matched: 0
+  open_sessions_after_exit: 2
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: ABC1234}
+  - {at: "08:07:00", camera: inbound_cam_01, plate: ABC1284}
+  - {at: "12:30:00", camera: outbound_cam_01, plate: ABC1234, observe_as: ABC12B4}

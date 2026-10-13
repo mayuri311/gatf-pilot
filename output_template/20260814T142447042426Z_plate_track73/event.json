@@ -3,6 +3,7 @@
   "event_type": "plate_track_finalized",
   "timestamp_utc": "2026-08-14T14:24:47.042426+00:00",
   "source": "camera_captures/capture_20260813_205719.mp4",
+  "camera_id": "inbound_cam_01",
   "track_id": 73,
   "frame_first": 4791,
   "frame_last": 4942,

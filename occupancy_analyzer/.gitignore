@@ -1,0 +1,6 @@
+sim_out/
+backups/
+.env
+.env.local
+__pycache__/
+.venv/

@@ -1,0 +1,42 @@
+name: admin_reconciliation
+id: 12
+title: Admin reconciliation
+mode: partial
+days: 2
+description: >
+  11 cars from day 1 left undetected: 6 exits missed, 5 exits misread beyond
+  recognition (orphan exits). Day 2: 41 cars present. Before reconciling
+  S2 (open sessions) = 52, S1 (best estimate) = 47. Admin counts 41 at 12:00
+  day 2 and closes the 11 top-ranked proposals (suspect-stale / multi-day
+  first) -> S2 = 41, S1 re-anchors to 41, residual 6 recorded, band ±0.
+  The reconcile action needs an admin JWT at replay time (see README).
+expect:
+  before: {s1: 47, s2: 52}
+  reconcile: {visual_count: 41, closed: 11, residual: 6, closed_status: closed_admin}
+  after: {s1: 41, s2: 41, band_low: 41, band_high: 41}
+  survives_resessionize: true
+steps:
+  - bulk:
+      camera: inbound_cam_01
+      at: "07:00:00"
+      every: 2m
+      plates: [DDW5941, CAX1331, GZF1212, WHZ3421, GYX2944, ZSC9631, GXY6287, CFD0004, BLR9594, BCE7477, CNK2453]
+  - bulk:
+      camera: outbound_cam_01
+      at: "17:00:00"
+      every: 3m
+      plates: [DDW5941, CAX1331, GZF1212, WHZ3421, GYX2944, ZSC9631, GXY6287, CFD0004, BLR9594, BCE7477, CNK2453]
+      emit: [false, false, false, false, false, false, true, true, true, true, true]
+      observe_as: [null, null, null, null, null, null, HT49QQ, 7MM2UK, QQ81XT, JJ0K7Y, 4UUT9X]
+  - bulk:
+      camera: inbound_cam_01
+      day: 1
+      at: "06:30:00"
+      every: 2m
+      plates: [ABJ0026, YVH1839, MYF1615, WSR2685, SLD8244, AKZ0146, JEJ2614, PRZ8512, RKA8853, WND3058,
+               UDW2527, MAJ9070, ZGZ6713, BWF6833, WUV8280, KAS9643, RKG4030, XXX3549, NTG2340, CGB2625,
+               MLS6462, SVC8833, VAD3199, DHD0664, YYW5695, FYE3868, HEB2323, TVN5725, ZBJ7238, YGV3862,
+               XWY0121, YHB8385, PER9063, XTA0415, SRW6737, TZJ3297, JYH0043, GNT0493, TDU2601, ZYW1798,
+               ZTL6527]
+actions:
+  - {at: "12:00:00", day: 1, action: reconcile, visual_count: 41, close: 11}

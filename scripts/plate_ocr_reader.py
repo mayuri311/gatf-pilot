@@ -35,23 +35,42 @@ event.json with the consensus reading, the full list of raw per-frame reads
 the plate region from the single frame whose read is closest to the
 consensus (not the vehicle, not the full frame).
 
-This is a local-only validation tool: it does not upload to Supabase. The
-existing events table (see supabase_schema.sql) is shaped for vehicle
-crossing events (event_type check-constrained to entry/exit, vehicle_class,
-track_id, etc.) and doesn't fit this metadata - wire up sync later with its
-own table if this becomes a real pipeline.
+Producer v2 (plan/13-data-contracts.md): event.json follows event contract
+v2 - schema_version 2, camera_id, device_id, and captured_at_utc (capture
+time of the representative frame, which the backend uses as the event
+time; timestamp_utc stays the finalize time). Live streams stamp each frame
+with the wall-clock UTC time it was grabbed; a video file uses
+--source-start-utc + frame_index / fps when given, else wall clock too.
+Credentials are stripped from `source` before it's stored or logged. The
+payload itself is built in contract_v2.py (pure, unit tested).
 
-Usage:
-    python plate_ocr_reader.py --source "rtsp://user:pass@192.168.1.64/axis-media/media.amp"
-    python plate_ocr_reader.py --source camera_captures/capture_20260813_205719.mp4
+Accepted events are queued for real-time upload (supabase_sync.EventUploader,
+a no-op without SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY; upload_events.py is
+the catch-up/retry path). Rejected tracks only ever go to rejected_dir and
+are never uploaded. A heartbeat v1 is sent every config heartbeat.interval_s
+(heartbeat.py) - to the report_heartbeat RPC, or to <events_dir>/../
+heartbeats.jsonl when Supabase isn't configured. A live stream that drops is
+reopened with backoff instead of ending the run, reported in the heartbeat
+as "rtsp reconnecting".
+
+Usage (from the repo root; camera_id/device_id must match config.yaml cameras[]):
+    # Jetson at the entrance / exit (device_id comes from config.yaml)
+    python scripts/plate_ocr_reader.py --camera-id inbound_cam_01 \\
+        --source "rtsp://user:pass@192.168.1.64/axis-media/media.amp" --headless
+    python scripts/plate_ocr_reader.py --camera-id outbound_cam_01 \\
+        --source "rtsp://user:pass@192.168.1.65/axis-media/media.amp" --headless
+    # replay a recording with its real capture times (20:57:19 EDT = 00:57:19Z)
+    python scripts/plate_ocr_reader.py --camera-id inbound_cam_01 \\
+        --source camera_captures/capture_20260813_205719.mp4 \\
+        --source-start-utc 2026-08-14T00:57:19Z --no-upload
 """
 
 import argparse
 import json
-import re
+import sys
+import time
 import uuid
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -63,25 +82,30 @@ from ultralytics.trackers.byte_tracker import BYTETracker
 from ultralytics.utils import YAML, IterableSimpleNamespace
 from ultralytics.utils.checks import check_yaml
 
+# make `scripts.*` importable both as `python scripts/plate_ocr_reader.py` and
+# as `python -m scripts.plate_ocr_reader`
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.contract_v2 import (  # noqa: E402
+    CLEAN_READ_RE, DEFAULT_CONFIG_PATH, build_event_payload, captured_at_for,
+    config_cameras, heartbeat_interval_s, is_clean_read, is_live_source,
+    load_config, normalize_read, parse_utc, redact_source, resolve_camera_id,
+    resolve_device_id, utc_now,
+)
+from scripts.heartbeat import HeartbeatSender  # noqa: E402
+from scripts.supabase_sync import EventUploader  # noqa: E402
+
 load_dotenv()
 
 
-# A plate read is only trusted if it is pure A-Z0-9. The OCR model emits "_" as
-# its blank/pad token, so reads like "1_1", "5__33" or "41_7" are partial
-# decodes leaking the pad character - not plates. Excluding them from the vote
-# both kills those false positives and sharpens consensus on real plates, whose
-# clean reads then dominate the modal-length grouping.
-CLEAN_READ_RE = re.compile(r"^[A-Z0-9]+$")
+# CLEAN_READ_RE / normalize_read / is_clean_read live in contract_v2.py now (the
+# event payload's reads[].clean needs them without cv2); re-exported above.
 
 DEFAULT_MIN_PLATE_CHARS = 5
 
-
-def normalize_read(text):
-    return (text or "").strip().upper()
-
-
-def is_clean_read(text):
-    return bool(CLEAN_READ_RE.match(normalize_read(text)))
+# Live-stream reconnect backoff, seconds.
+RECONNECT_MIN_S = 2
+RECONNECT_MAX_S = 30
 
 
 def validate_plate(text, min_chars=DEFAULT_MIN_PLATE_CHARS):
@@ -140,7 +164,7 @@ def draw_plate_boxes(frame, plate_results, tracked_rows):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
 
-def make_reading(frame, result, frame_index):
+def make_reading(frame, result, frame_index, captured_at_utc=None):
     box = result.detection.bounding_box
     x1, y1, x2, y2 = box.x1, box.y1, box.x2, box.y2
     crop = frame[max(y1, 0):y2, max(x1, 0):x2].copy()
@@ -162,6 +186,9 @@ def make_reading(frame, result, frame_index):
         "confidence_per_char": confidence_per_char,
         "detection_confidence": result.detection.confidence,
         "bounding_box": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+        # when this frame was captured - becomes the event's captured_at_utc
+        # if this read ends up as the track's representative
+        "captured_at_utc": captured_at_utc,
         "crop": crop,
     }
 
@@ -219,15 +246,17 @@ def best_reading(readings):
 
 
 def trigger_event(events_dir, rejected_dir, track_id, readings, source,
-                   min_plate_chars=DEFAULT_MIN_PLATE_CHARS):
+                   min_plate_chars=DEFAULT_MIN_PLATE_CHARS,
+                   camera_id=None, device_id=None):
     """Finalize one track. Valid plates land in events_dir; everything else goes
     to rejected_dir so the filter's decisions stay auditable rather than
-    silently discarding data."""
+    silently discarding data. The payload is event contract v2, built by
+    contract_v2.build_event_payload()."""
     consensus = best_reading(readings)
     representative = consensus["representative"]
     ok, reason = validate_plate(consensus["plate_text"], min_plate_chars)
 
-    ts = datetime.now(timezone.utc)
+    ts = utc_now()
     folder_name = f"{ts.strftime('%Y%m%dT%H%M%S%f')}Z_plate_track{track_id}"
     target_dir = events_dir if ok else rejected_dir
     event_dir = target_dir / folder_name
@@ -236,43 +265,19 @@ def trigger_event(events_dir, rejected_dir, track_id, readings, source,
     image_filename = "plate.jpg"
     cv2.imwrite(str(event_dir / image_filename), representative["crop"])
 
-    payload = {
-        "event_id": str(uuid.uuid4()),
-        "event_type": "plate_track_finalized",
-        "timestamp_utc": ts.isoformat(),
-        "source": str(source),
-        "track_id": track_id,
-        "frame_first": readings[0]["frame_index"],
-        "frame_last": readings[-1]["frame_index"],
-        "num_frames_tracked": len(readings),
-        "num_frames_with_text": sum(1 for r in readings if r["text"]),
-        "num_frames_used_for_consensus": consensus["num_frames_used_for_consensus"],
-        "plate_text": consensus["plate_text"],
-        "plate_confidence": consensus["plate_confidence"],
-        "plate_confidence_per_char": consensus["plate_confidence_per_char"],
-        "plate_detection_confidence": representative["detection_confidence"],
-        # relative to the full camera frame at the representative frame, not a vehicle crop
-        "plate_bounding_box": representative["bounding_box"],
-        "representative_frame_index": representative["frame_index"],
-        "reads": [
-            {"frame_index": r["frame_index"], "text": r["text"], "confidence": r["confidence"]}
-            for r in readings
-        ],
-        "image_filename": image_filename,
-        "rejected": not ok,
-        "rejection_reason": reason,
-    }
-    # Per-read audit trail: `clean` marks which reads were eligible to vote, so a
-    # surprising consensus can be traced back without re-running the video.
-    payload["reads"] = [
-        {
-            "frame_index": r["frame_index"],
-            "text": r["text"],
-            "confidence": r["confidence"],
-            "clean": is_clean_read(r["text"]),
-        }
-        for r in readings
-    ]
+    payload = build_event_payload(
+        event_id=uuid.uuid4(),
+        finalized_at=ts,
+        camera_id=camera_id,
+        device_id=device_id,
+        source=source,
+        track_id=track_id,
+        readings=readings,
+        consensus=consensus,
+        image_filename=image_filename,
+        rejected=not ok,
+        rejection_reason=reason,
+    )
 
     with open(event_dir / "event.json", "w") as f:
         json.dump(payload, f, indent=2)
@@ -315,9 +320,34 @@ def warn_possible_fragmentation(finalized, max_frame_gap=15):
                   f"gap={gap} frames")
 
 
+def open_capture(source):
+    cap = cv2.VideoCapture(source)
+    if cap.isOpened():
+        return cap
+    cap.release()
+    return None
+
+
+def capture_fps(cap):
+    """The capture's nominal fps, or None if it isn't believable - RTSP
+    backends sometimes report 0, or the 90 kHz RTP clock, instead."""
+    fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+    return fps if 1.0 <= fps <= 120.0 else None
+
+
 def run(source, events_dir="events", conf=0.4, show=True,
         tracker_yaml="scripts/bytetrack_plates.yaml",
-        rejected_dir=None, min_plate_chars=DEFAULT_MIN_PLATE_CHARS):
+        rejected_dir=None, min_plate_chars=DEFAULT_MIN_PLATE_CHARS,
+        camera_id=None, device_id=None, source_start_utc=None,
+        heartbeat_interval=60, upload=True):
+    live = is_live_source(source)
+    # never print/store the stream password - logs end up in bug reports
+    safe_source = redact_source(source)
+    if source_start_utc is not None and live:
+        print("[warn] --source-start-utc only applies to video files - "
+              "live frames are stamped with the wall clock")
+        source_start_utc = None
+
     alpr = ALPR(
         detector_model="yolo-v9-t-384-license-plate-end2end",
         ocr_model="cct-xs-v2-global-model",
@@ -330,9 +360,37 @@ def run(source, events_dir="events", conf=0.4, show=True,
     rejected_dir = Path(rejected_dir or f"{events_dir}_rejected")
     rejected_dir.mkdir(exist_ok=True)
 
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open source: {source}")
+    uploader = EventUploader() if upload else None
+    # started before the stream opens, so a camera that never comes up is
+    # still reported (status=error) instead of the device just going silent
+    heartbeat = HeartbeatSender(device_id, camera_id, events_dir,
+                                interval_s=heartbeat_interval).start()
+
+    def _reconnect(cap):
+        """Reopen a dropped live stream, backing off up to RECONNECT_MAX_S.
+        Blocks until it's back - the heartbeat thread keeps reporting
+        meanwhile (camera_connected=false, status=error after 10 s)."""
+        if cap is not None:
+            cap.release()
+        note = "rtsp reconnecting" if str(source).lower().startswith("rtsp") else "stream reconnecting"
+        delay = RECONNECT_MIN_S
+        while True:
+            heartbeat.set_stream_state(False, note)
+            print(f"[stream] {safe_source} not delivering frames - reconnecting in {delay}s")
+            time.sleep(delay)
+            cap = open_capture(source)
+            if cap is not None:
+                break
+            delay = min(delay * 2, RECONNECT_MAX_S)
+        print(f"[stream] {safe_source} connected")
+        heartbeat.set_stream_state(True)
+        heartbeat.set_nominal_fps(capture_fps(cap))
+        return cap
+
+    cap = open_capture(source)
+    if cap is None and not live:
+        heartbeat.stop()
+        raise RuntimeError(f"Could not open source: {safe_source}")
 
     track_buffers = defaultdict(list)
     finalized = []
@@ -340,9 +398,15 @@ def run(source, events_dir="events", conf=0.4, show=True,
     frame_index = -1
 
     def _finalize(tid, readings):
-        _, accepted = trigger_event(events_dir, rejected_dir, tid, readings,
-                                    source, min_plate_chars)
+        event_dir, accepted = trigger_event(events_dir, rejected_dir, tid, readings,
+                                            source, min_plate_chars,
+                                            camera_id=camera_id, device_id=device_id)
         counts["accepted" if accepted else "rejected"] += 1
+        if accepted:
+            heartbeat.note_event(utc_now())
+            # rejected tracks are local-only by design (doc 13 §1, D24)
+            if uploader is not None:
+                uploader.submit(event_dir)
         consensus = best_reading(readings)
         finalized.append({
             "track_id": tid,
@@ -353,35 +417,60 @@ def run(source, events_dir="events", conf=0.4, show=True,
             "last_box": readings[-1]["bounding_box"],
         })
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frame_index += 1
+    try:
+        if cap is None:
+            cap = _reconnect(None)
+        else:
+            heartbeat.set_stream_state(True)
+            heartbeat.set_nominal_fps(capture_fps(cap))
 
-        plate_results = get_plate_detections(alpr, frame)
-        boxes = detections_to_boxes(plate_results, frame.shape)
-        tracked_rows = tracker.update(boxes)
+        # only a file's own fps can turn frame_index into a recording time
+        file_fps = None
+        if source_start_utc is not None:
+            file_fps = capture_fps(cap)
+            if file_fps is None:
+                print("[warn] video fps unknown - ignoring --source-start-utc, "
+                      "frames get wall-clock capture times")
 
-        for row in tracked_rows:
-            track_id, idx = int(row[4]), int(row[7])
-            track_buffers[track_id].append(make_reading(frame, plate_results[idx], frame_index))
+        while True:
+            ok, frame = cap.read()
+            grabbed_at = utc_now()
+            if not ok:
+                if not live:
+                    break  # end of the video file
+                cap = _reconnect(cap)
+                continue
+            frame_index += 1
+            heartbeat.note_frame()
+            captured_at = captured_at_for(frame_index, grabbed_at, source_start_utc, file_fps)
 
-        # a track_id still in tracked_stracks is matched this frame; still in
-        # lost_stracks means it's within track_buffer frames of its last
-        # match and being kept alive on motion prediction alone. Anything in
-        # our buffer that's in neither has just aged out - finalize it.
-        alive_ids = {t.track_id for t in tracker.tracked_stracks} | {t.track_id for t in tracker.lost_stracks}
-        for tid in [tid for tid in track_buffers if tid not in alive_ids]:
-            _finalize(tid, track_buffers.pop(tid))
+            plate_results = get_plate_detections(alpr, frame)
+            boxes = detections_to_boxes(plate_results, frame.shape)
+            tracked_rows = tracker.update(boxes)
 
-        if show:
-            draw_plate_boxes(frame, plate_results, tracked_rows)
-            cv2.imshow("plate OCR reader", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+            for row in tracked_rows:
+                track_id, idx = int(row[4]), int(row[7])
+                track_buffers[track_id].append(
+                    make_reading(frame, plate_results[idx], frame_index, captured_at))
 
-    cap.release()
+            # a track_id still in tracked_stracks is matched this frame; still in
+            # lost_stracks means it's within track_buffer frames of its last
+            # match and being kept alive on motion prediction alone. Anything in
+            # our buffer that's in neither has just aged out - finalize it.
+            alive_ids = {t.track_id for t in tracker.tracked_stracks} | {t.track_id for t in tracker.lost_stracks}
+            for tid in [tid for tid in track_buffers if tid not in alive_ids]:
+                _finalize(tid, track_buffers.pop(tid))
+
+            if show:
+                draw_plate_boxes(frame, plate_results, tracked_rows)
+                cv2.imshow("plate OCR reader", frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+    except KeyboardInterrupt:
+        print("\n[stop] interrupted - finalizing open tracks")
+
+    if cap is not None:
+        cap.release()
     cv2.destroyAllWindows()
 
     # video ended with tracks still open (tracked or lost-but-not-removed) - flush them too
@@ -392,11 +481,38 @@ def run(source, events_dir="events", conf=0.4, show=True,
     print(f"\n{counts['accepted']} plates registered -> {events_dir}")
     print(f"{counts['rejected']} rejected (audit them) -> {rejected_dir}")
 
+    # the uploader thread is a daemon - let queued uploads finish before exit
+    # (a failure is logged and left for upload_events.py, so this can't hang)
+    if uploader is not None and uploader.enabled and uploader.queue.unfinished_tasks:
+        print("[upload] waiting for queued uploads to finish...")
+        uploader.queue.join()
+
+    # one last beat so the dashboard sees the stream stop rather than a stale "ok"
+    heartbeat.set_stream_state(False, "producer stopped")
+    heartbeat.send_once()
+    heartbeat.stop()
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True,
                      help="Axis RTSP URL, video file, or webcam index")
+    ap.add_argument("--camera-id", default=None,
+                     help="camera_id from config.yaml cameras[] (inbound_cam_01 / "
+                          "outbound_cam_01). Required unless exactly one camera's "
+                          "device_id matches --device-id or this hostname.")
+    ap.add_argument("--device-id", default=None,
+                     help="default: config.yaml cameras[] entry for --camera-id, "
+                          "else the hostname")
+    ap.add_argument("--config", default=str(DEFAULT_CONFIG_PATH),
+                     help="config.yaml (v2) for cameras[] and heartbeat.interval_s")
+    ap.add_argument("--source-start-utc", default=None,
+                     help="video files only: ISO-8601 UTC time of the file's first "
+                          "frame, so captured_at_utc = start + frame_index / fps "
+                          "(e.g. 2026-08-14T00:57:19Z). Default: wall clock at grab.")
+    ap.add_argument("--no-upload", action="store_true",
+                     help="don't upload events in real time (upload_events.py can "
+                          "sweep them up later)")
     ap.add_argument("--conf", type=float, default=0.4,
                      help="plate DETECTION confidence threshold. Lowering this is "
                           "not what fixes track fragmentation - see "
@@ -414,7 +530,31 @@ if __name__ == "__main__":
                      help="don't open a preview window")
     args = ap.parse_args()
 
+    config = load_config(args.config)
+    camera_id = resolve_camera_id(config, args.camera_id, args.device_id)
+    if not camera_id:
+        ap.error("--camera-id is required (couldn't resolve it from --device-id / "
+                 f"hostname in {args.config})")
+    known = {c.get("camera_id") for c in config_cameras(config)}
+    if known and camera_id not in known:
+        print(f"[warn] camera_id {camera_id!r} is not in {args.config} cameras[] "
+              f"{sorted(known)} - the backend will quarantine its events")
+    device_id = resolve_device_id(config, camera_id, args.device_id)
+
+    source_start_utc = None
+    if args.source_start_utc:
+        try:
+            source_start_utc = parse_utc(args.source_start_utc)
+        except ValueError:
+            ap.error(f"--source-start-utc: not an ISO-8601 time: {args.source_start_utc!r}")
+
+    print(f"[producer v2] camera_id={camera_id} device_id={device_id} "
+          f"source={redact_source(args.source)}")
     src = int(args.source) if args.source.isdigit() else args.source
     run(src, args.events_dir, args.conf, show=not args.headless,
         tracker_yaml=args.tracker, rejected_dir=args.rejected_dir,
-        min_plate_chars=args.min_plate_chars)
+        min_plate_chars=args.min_plate_chars,
+        camera_id=camera_id, device_id=device_id,
+        source_start_utc=source_start_utc,
+        heartbeat_interval=heartbeat_interval_s(config),
+        upload=not args.no_upload)

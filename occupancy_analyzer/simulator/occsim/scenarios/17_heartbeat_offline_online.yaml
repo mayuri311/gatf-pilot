@@ -1,0 +1,18 @@
+name: heartbeat_offline_online
+id: 17
+title: Heartbeat offline / online
+mode: replay
+horizon: {start: "09:50", end: "10:30"}
+outages: ["inbound_cam_01@10:05/6m:lost"]
+description: >
+  jetson-in-01 stops sending heartbeats 10:05-10:11 (> offline_after_s = 180 s)
+  -> device offline, critical banner, one `device` broadcast; beats resume ->
+  auto-resolve, one broadcast. Steady heartbeats produce no broadcasts.
+expect:
+  offline_device: jetson-in-01
+  offline_detected_by: "10:08"
+  online_again_at: "10:11"
+  device_broadcasts: 2
+steps:
+  - {at: "09:58:00", camera: inbound_cam_01, plate: HBT1717}
+  - {at: "10:20:00", camera: outbound_cam_01, plate: HBT1717}

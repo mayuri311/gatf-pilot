@@ -1,0 +1,42 @@
+# config/config.yaml — v2 (Vercel-only, keep it simple). See plan/13-data-contracts.md §3.
+#
+# Non-secret settings only — safe to commit, so the Vercel build can read it.
+# Secrets live in environment variables, never in this file:
+#   Vercel project env : SUPABASE_SECRET_KEY, OPENAI_API_KEY, READONLY_DATABASE_URL,
+#                        PLATE_HMAC_KEY, BOOTSTRAP_ADMIN_PASSWORD
+#   Jetsons / local    : .env (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_BUCKET, OPENAI_API_KEY)
+
+parkinglot:
+  lot_id: gatf_main
+  name: "GATF Parking Lot"
+  capacity: 100                    # synced to the DB on every Vercel deploy
+  timezone: "America/New_York"
+
+cameras:
+  - camera_id: inbound_cam_01
+    direction: in
+    device_id: jetson-in-01
+  - camera_id: outbound_cam_01
+    direction: out
+    device_id: jetson-out-01
+
+supabase:
+  url: "https://rfqdabtufcmkokuwflwo.supabase.co"
+  bucket: "event-snapshots"
+
+auth:
+  bootstrap_admin_email: "mayuri.murugs@gmail.com"   # password: BOOTSTRAP_ADMIN_PASSWORD env var; forced change at first login
+
+ai:
+  enabled: true
+  provider: openai
+  model: "gpt-5.6-terra"
+
+heartbeat:
+  interval_s: 60
+  offline_after_s: 180             # 3 missed heartbeats → "camera offline" banner
+
+retention:
+  plate_text_days: 30
+  crop_days: 14
+  reads_full_days: 7               # per-frame reads[] compacted after this (Supabase Free sizing)

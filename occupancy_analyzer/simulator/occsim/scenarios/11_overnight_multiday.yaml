@@ -1,0 +1,15 @@
+name: overnight_multiday
+id: 11
+title: Overnight / multi-day flags
+mode: replay
+days: 2
+description: >
+  A enters 18:00 and never leaves. Flagged overnight at 03:00, suspect_stale
+  and multi_day after 24 h. Still open and still counted; nothing auto-closes.
+expect:
+  status: open
+  flags_after_0300_next_day: [overnight]
+  flags_after_24h: [overnight, suspect_stale, multi_day]
+  final_occupancy: 1
+steps:
+  - {at: "18:00:00", camera: inbound_cam_01, plate: NVA5150}

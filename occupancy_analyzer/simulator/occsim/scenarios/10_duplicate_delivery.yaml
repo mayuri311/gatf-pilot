@@ -1,0 +1,13 @@
+name: duplicate_delivery
+id: 10
+title: Duplicate delivery
+mode: replay
+description: The same event_id is delivered twice (upsert retry) -> no change.
+expect:
+  events_rows: 2
+  entry_passes: 1
+  sessions: 1
+  final_occupancy: 0
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: FLW6603, duplicates: 1}
+  - {at: "09:30:00", camera: outbound_cam_01, plate: FLW6603}

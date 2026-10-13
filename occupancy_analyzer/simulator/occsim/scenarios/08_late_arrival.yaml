@@ -1,0 +1,15 @@
+name: late_arrival
+id: 8
+title: Late arrival (offline edge)
+mode: replay
+description: A's exit read is uploaded 3 h late -> re-sessionizing yields the same result as in order.
+expect:
+  sessions: 2
+  statuses: {closed: 2}
+  final_occupancy: 0
+  same_as_in_order: true
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: PXR3318}
+  - {at: "09:00:00", camera: inbound_cam_01, plate: DWT6042}
+  - {at: "10:00:00", camera: outbound_cam_01, plate: PXR3318, late: 3h}
+  - {at: "11:00:00", camera: outbound_cam_01, plate: DWT6042}

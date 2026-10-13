@@ -1,0 +1,16 @@
+name: missed_exit_reentry
+id: 6
+title: Missed exit then re-entry
+mode: replay
+days: 2
+description: A enters day 1, its exit is missed, A enters again day 2 -> day-1 session closed_inferred.
+expect:
+  sessions: 2
+  day1_status: closed_inferred
+  day2_status: closed
+  final_occupancy: 0
+steps:
+  - {at: "08:00:00", camera: inbound_cam_01, plate: KLP5520}
+  - {at: "17:10:00", camera: outbound_cam_01, plate: KLP5520, emit: false}
+  - {at: "08:05:00", day: 1, camera: inbound_cam_01, plate: KLP5520}
+  - {at: "17:00:00", day: 1, camera: outbound_cam_01, plate: KLP5520}
