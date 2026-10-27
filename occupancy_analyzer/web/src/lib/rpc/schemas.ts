@@ -83,6 +83,34 @@ export const passRow = z.object({
 });
 export type PassRow = z.infer<typeof passRow>;
 
+/** Edge-system snapshot carried by heartbeats (scripts/sysmetrics.py). Every field
+ *  is optional: null until migration 20261024000100 and a metrics-aware edge build. */
+export const edgeMetrics = z.object({
+  cpu_pct: num,
+  cpu_max_core_pct: num,
+  load_1m: num,
+  ram_used_mb: num,
+  ram_total_mb: num,
+  gpu_pct: num,
+  temp_c: num,
+  power_w: num,
+  camera_mbps: num,
+  camera_rx_mbps: num,
+  uplink_iface: str,
+  uplink_tx_kbps: num,
+  uplink_rx_kbps: num,
+  ssd_free_gb: num,
+  ssd_total_gb: num,
+  ssd_write_mbps: num,
+  upload_backlog: num,
+  upload_oldest_age_s: num,
+  upload_gated: z.boolean().nullable().catch(null),
+  upload_last_error: str,
+  clip_backlog: num,
+  sampled_at_utc: str,
+});
+export type EdgeMetrics = z.infer<typeof edgeMetrics>;
+
 export const deviceRow = z.object({
   device_id: z.string(),
   camera_id: str,
@@ -98,6 +126,7 @@ export const deviceRow = z.object({
   uptime_s: num,
   app_version: str,
   message: str,
+  metrics: edgeMetrics.nullable().catch(null),
   last_read_at: str,
 });
 export type DeviceRow = z.infer<typeof deviceRow>;

@@ -26,3 +26,19 @@ uv run --with pytest --with pyyaml --with python-dotenv pytest scripts/tests -q
 - Accepted events upload in real time; rejected tracks stay in `<events-dir>_rejected` and are never uploaded.
 - A heartbeat is sent every `heartbeat.interval_s` (60 s) via the `report_heartbeat` RPC. Without Supabase credentials it is appended to `heartbeats.jsonl` next to the events dir.
 - Stream credentials are stripped from `source` before anything is stored or logged. A dropped RTSP stream is reopened automatically.
+
+## One Jetson, both cameras (`scripts/run_pipeline.sh`)
+
+One Jetson runs both Axis cameras off the PoE switch. `scripts/run_pipeline.sh` starts and supervises, per camera, the segment recorder (10 s MP4 segments to the SSD) and the plate reader (events to an SSD spool, `--no-upload`), plus one clipper (±10 s verification clip per event), one spool uploader (drains the spool to Supabase, yields when CPU > 85 %, backs off on network errors) and `sysmetrics.py` (CPU/GPU/RAM/temperature/bitrate/uplink/SSD, attached to heartbeats). Each camera process keeps its own `device_id` from `config/config.yaml`, because `device_heartbeats` is keyed by it.
+
+```bash
+scripts/run_pipeline.sh --check            # preflight: SSD, venv, ffmpeg, .env, eth link, camera pings
+scripts/run_pipeline.sh --dry-run 300      # 5 min run, clean stop, summary
+scripts/run_pipeline.sh                    # until Ctrl-C (graceful: readers -> post-roll -> recorders -> clips -> uploads)
+.venv/bin/python scripts/sysmetrics.py --watch   # live metrics view
+```
+
+- Camera IPs live in `scripts/video/recorder.config.json` (gitignored; copy the `.example`).
+- The repo-root `.env` needs `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_BUCKET`, `CAM_IN_USER`/`CAM_IN_PASS` and `CAM_OUT_USER`/`CAM_OUT_PASS`.
+- On the SSD (`/mnt/validation/gatf/`): `video/` holds the continuous ring, pruned oldest-first under 20 GB free. `clips/` holds the event clips, which are never pruned. `events/` is the upload spool. `metrics/` holds the jsonl history. `logs/` holds one log per process.
+- Dashboard metrics need `occupancy_analyzer/supabase/migrations/20261024000100_device_metrics.sql` applied.

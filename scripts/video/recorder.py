@@ -65,7 +65,8 @@ def _ensure_gst() -> None:
 log = logging.getLogger("recorder")
 
 NS_PER_S = 1_000_000_000
-PID_FILENAME = "recorder.pid"
+# One pid file per camera, so eject.sh can stop every recorder that is running.
+PID_FILENAME = "recorder-{camera_id}.pid"
 
 # Matches the UTC convention the event pipeline already uses (yolo_plate_reader.py),
 # deliberately NOT capture.sh's local-time format, so segment names and event dir
@@ -276,7 +277,8 @@ class SegmentRecorder:
             self._on_element_message(message)
         elif t == Gst.MessageType.EOS:
             log.info("EOS received")
-            if self.shutting_down:
+            # a test file ending is the end of the run, not a dropped stream to reopen
+            if self.shutting_down or self.test_file:
                 self.loop.quit()
             else:
                 self._schedule_restart("stream ended")
@@ -515,7 +517,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
-    cfg = config_mod.load(args.config)
+    # only recording opens a stream (credentials resolved below, for that camera only)
+    cfg = config_mod.load(args.config, credentials=False)
     if args.segment_seconds:
         cfg.segment_seconds = args.segment_seconds
 
@@ -568,13 +571,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--camera is required (or use --init-drive/--reconcile/--export-csv/--status)")
 
     camera = cfg.camera(args.camera)
+    if not args.test_file:
+        config_mod.with_credentials(camera)
     _setup_logging(
         drive_mod.log_dir(gatf) / f"recorder-{camera.camera_id}.log", args.verbose
     )
     index_db.register_drive(conn, cfg.drive_uuid, args.label, drive_mod.fstype_at_path(mount))
 
     # PID file so eject.sh can stop us gracefully rather than yanking a live writer.
-    pid_file = drive_mod.log_dir(gatf) / PID_FILENAME
+    pid_file = drive_mod.log_dir(gatf) / PID_FILENAME.format(camera_id=camera.camera_id)
     pid_file.write_text(str(os.getpid()))
 
     recorder = SegmentRecorder(

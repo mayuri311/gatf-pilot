@@ -106,7 +106,9 @@ otherwise.
   index/segments.csv         # portable mirror, rewritten on stop and on eject
   video/<camera_id>/<YYYY-MM-DD>/<camera_id>_<YYYYMMDDTHHMMSSffffff>Z.mp4
   logs/recorder-<camera_id>.log
-  logs/recorder.pid
+  logs/recorder-<camera_id>.pid   # one per running recorder (eject.sh stops them all)
+  clips/<camera_id>/<YYYY-MM-DD>/<event_folder>.mp4   # clipper.py, never pruned
+  events/<camera_id>[_rejected]/<event_folder>/       # plate-reader spool (run_pipeline.sh)
 ```
 
 Segment filenames use the same UTC convention as the event directories in `events/`
@@ -197,10 +199,26 @@ the recorder is still running.
 - **exFAT** has no journal and only a 4-byte volume serial for a "UUID"
   (`1234-ABCD`). It works, but `preflight` warns for good reason.
 
+## Verification clips (`clipper.py`)
+
+`clipper.py` joins plate events to segments by `camera_id` + wall clock and cuts a
+±10 s clip per event (`[first_seen_utc - 10 s, last_seen_utc + 10 s]`), again with
+**no re-encode**: GStreamer's `concat` joins the segments, then ffmpeg trims with
+`-c copy` (the cut snaps to the keyframe before the window start). JetPack's ffmpeg
+(`8.0.1-nvidia1`) has no concat demuxer, and its `ffprobe` can't read stream info
+without a CUDA decoder Jetson lacks, so neither is relied on. It waits until a closed segment covers the post-roll; after
+`--max-wait` (90 s) it cuts what exists and marks the clip `partial`. Each event folder
+gets a `clip.json` (`status`, `clip_path`, window, segments used). Clips stay on the
+drive - nothing is uploaded.
+
+Set `"ntp_sync": false` when clipping: segment times then come from the Jetson clock,
+the same clock the plate reader stamps frames with. `scripts/run_pipeline.sh` starts the
+recorders, plate readers, clipper, spool uploader and metrics together.
+
+```bash
+python3 -m scripts.video.clipper --once          # one pass over pending events
+```
+
 ## Not in scope
 
-Motion-gated recording, uploading video to Supabase, and joining segments to `events`
-rows are all deliberately out. When the join is wanted, note that the inference scripts
-record `frame_index` but not fps, so there is currently no frame → wall-clock mapping;
-once both sides share a `camera_id` and UTC, the join is simply
-`event.timestamp_utc BETWEEN segments.start_utc AND segments.end_utc`.
+Motion-gated recording and uploading video to Supabase are deliberately out.

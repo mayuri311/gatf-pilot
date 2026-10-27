@@ -47,29 +47,41 @@ DB="$GATF/index/segments.db"
 PIDFILE="$GATF/logs/recorder.pid"
 echo "Drive $UUID mounted at $MOUNT"
 
-# --- 1. stop the recorder gracefully (EOS -> final moov atom written) --------
-if [[ -f "$PIDFILE" ]]; then
-    PID="$(cat "$PIDFILE")"
-    if kill -0 "$PID" 2>/dev/null; then
-        echo "Stopping recorder (pid $PID) and waiting for the last segment to close..."
-        kill -TERM "$PID"
-        for _ in $(seq 1 30); do
-            kill -0 "$PID" 2>/dev/null || break
-            sleep 1
-        done
-        if kill -0 "$PID" 2>/dev/null; then
-            echo "ERROR: recorder pid $PID did not exit within 30s." >&2
-            echo "       Its last segment would be truncated. Investigate before unplugging." >&2
-            exit 1
-        fi
-        echo "Recorder stopped cleanly."
-    else
-        echo "Stale pid file (pid $PID not running) — removing."
-        rm -f "$PIDFILE"
+# Stop one process from its pid file, waiting up to $2 seconds. Exits the script
+# if it doesn't stop: whatever it's writing would be truncated.
+stop_pidfile() {
+    local pidfile="$1" timeout="$2" what pid
+    what="$(basename "$pidfile" .pid)"
+    pid="$(cat "$pidfile")"
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "Stale pid file for $what (pid $pid not running) — removing."
+        rm -f "$pidfile"
+        return
     fi
-else
-    echo "No recorder pid file; assuming nothing is recording."
-fi
+    echo "Stopping $what (pid $pid) and waiting for it to finish cleanly..."
+    kill -TERM "$pid"
+    for _ in $(seq 1 "$timeout"); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "ERROR: $what pid $pid did not exit within ${timeout}s." >&2
+        echo "       Its last segment would be truncated. Investigate before unplugging." >&2
+        exit 1
+    fi
+    echo "$what stopped cleanly."
+}
+
+# --- 1. stop the pipeline, then any standalone recorders (EOS -> moov written) --
+# run_pipeline.sh stops its producers/clipper/uploader too, which also hold the drive.
+shopt -s nullglob
+[[ -f "$GATF/logs/pipeline.pid" ]] && stop_pidfile "$GATF/logs/pipeline.pid" 60
+PIDFILES=("$GATF"/logs/recorder-*.pid "$GATF"/logs/recorder.pid)
+for pidfile in "${PIDFILES[@]}"; do
+    [[ -f "$pidfile" ]] && stop_pidfile "$pidfile" 30
+done
+[[ ${#PIDFILES[@]} -eq 0 ]] && echo "No recorder pid files; assuming nothing is recording."
+shopt -u nullglob
 
 # --- 2. checkpoint the WAL + integrity check --------------------------------
 if [[ -f "$DB" ]]; then

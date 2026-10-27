@@ -1,1 +1,6 @@
 .env
+.venv/
+.camera_config
+scripts/video/recorder.config.json
+__pycache__/
+camera_captures/

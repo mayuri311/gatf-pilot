@@ -13,6 +13,11 @@ A failed send is only logged, never raised: a dead network must not take the
 frame loop down with it. The next beat simply tries again, and the server
 derives "offline" from beats that never arrive.
 
+Edge-system metrics: when sysmetrics.py is running it keeps a
+state/metrics_latest.json snapshot; pass its path as metrics_path and each beat
+carries that snapshot (plus this camera's stream bitrate) under `metrics`.
+A missing or stale snapshot (older than METRICS_MAX_AGE_S) is simply left out.
+
 Where beats go:
   - SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY set -> rpc('report_heartbeat',
     {'hb': ...}) via supabase_sync.send_heartbeat()
@@ -34,6 +39,9 @@ from scripts.contract_v2 import (
 # later, so a freshly (re)started device shows up as online right away.
 FIRST_BEAT_AFTER_S = 5
 
+# A metrics snapshot older than this is a dead collector, not current data.
+METRICS_MAX_AGE_S = 30
+
 
 def offline_heartbeat_path(events_dir):
     return Path(events_dir).resolve().parent / "heartbeats.jsonl"
@@ -47,6 +55,24 @@ def make_jsonl_writer(path):
         with open(path, "a") as f:
             f.write(json.dumps(hb) + "\n")
     return _write
+
+
+def load_metrics_summary(path, camera_id, max_age_s=METRICS_MAX_AGE_S, now=None):
+    """The heartbeat `metrics` dict from sysmetrics.py's latest snapshot: the
+    shared system figures plus this camera's own stream bitrate. None if the
+    file is missing, unreadable or stale - a heartbeat must never fail on it."""
+    try:
+        snap = json.loads(Path(path).read_text())
+        age = (now or time.time()) - float(snap["sampled_at_epoch"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if age > max_age_s:
+        return None
+    summary = dict(snap.get("system") or {})
+    cam = (snap.get("cameras") or {}).get(camera_id) or {}
+    summary["camera_mbps"] = cam.get("mbps")
+    summary["sampled_at_utc"] = snap.get("sampled_at_utc")
+    return summary
 
 
 def make_send_fn(events_dir):
@@ -63,7 +89,7 @@ def make_send_fn(events_dir):
 class HeartbeatSender:
     def __init__(self, device_id, camera_id, events_dir, interval_s=60,
                  send_fn=None, nominal_fps=None, app_version=APP_VERSION,
-                 clock=time.monotonic):
+                 clock=time.monotonic, metrics_path=None):
         self.device_id = device_id
         self.camera_id = camera_id
         self.events_dir = Path(events_dir)
@@ -76,6 +102,7 @@ class HeartbeatSender:
             self.destination = getattr(send_fn, "__name__", "custom")
         self.send_fn = send_fn
         self._clock = clock
+        self.metrics_path = metrics_path
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -141,6 +168,8 @@ class HeartbeatSender:
             stream_open=stream_open,
             message=message,
             app_version=self.app_version,
+            metrics=(load_metrics_summary(self.metrics_path, self.camera_id)
+                     if self.metrics_path else None),
         )
 
     def send_once(self):

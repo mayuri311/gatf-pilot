@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 
 from scripts import contract_v2 as c
-from scripts.heartbeat import HeartbeatSender, make_send_fn, offline_heartbeat_path
+from scripts.heartbeat import (HeartbeatSender, load_metrics_summary, make_send_fn,
+                               offline_heartbeat_path)
 
 REPO = Path(__file__).resolve().parents[2]
 SAMPLES = REPO / "plan" / "samples"
@@ -86,8 +87,9 @@ def make_payload(**overrides):
 
 def test_event_payload_matches_sample_shape():
     payload = make_payload()
-    # exactly the sample's keys, plus the two local-only audit fields
-    assert set(payload) == set(EVENT_SAMPLE) | {"rejected", "rejection_reason"}
+    # exactly the sample's keys, plus the local-only audit and clip-window fields
+    assert set(payload) == set(EVENT_SAMPLE) | {"rejected", "rejection_reason",
+                                                "first_seen_utc", "last_seen_utc"}
     assert_same_types(payload, EVENT_SAMPLE)
     # same leading key order as the contract sample (readability of event.json)
     assert list(payload)[:8] == list(EVENT_SAMPLE)[:8]
@@ -110,6 +112,15 @@ def test_event_payload_times_and_counters():
     assert payload["num_frames_with_text"] == 4
     assert [r["clean"] for r in payload["reads"]] == [False, True, True, True, False]
     assert payload["rejected"] is False and payload["rejection_reason"] is None
+
+
+def test_event_payload_seen_window():
+    payload = make_payload()
+    assert payload["first_seen_utc"] == c.iso_utc(T0)
+    assert payload["last_seen_utc"] == c.iso_utc(T0 + timedelta(seconds=4 / 30))
+    # local-only: never sent to public.events
+    row = c.filter_event_columns(payload, "x.jpg")
+    assert "first_seen_utc" not in row and "last_seen_utc" not in row
 
 
 def test_event_payload_strips_credentials():
@@ -303,6 +314,14 @@ def test_heartbeat_matches_sample_shape():
     json.dumps(payload)
 
 
+def test_heartbeat_metrics_is_additive():
+    assert "metrics" not in hb()
+    payload = hb(metrics={"cpu_pct": 41.0, "camera_mbps": 3.9})
+    assert payload["metrics"] == {"cpu_pct": 41.0, "camera_mbps": 3.9}
+    assert payload["schema_version"] == 1
+    assert list(payload)[:-1] == list(HB_SAMPLE)
+
+
 def test_heartbeat_no_event_yet():
     assert hb(last_event_at=None)["last_event_at_utc"] is None
 
@@ -383,6 +402,34 @@ def test_heartbeat_sender_startup_grace(tmp_path):
     assert sender.build()["status"] == "ok"
     clock.t += 10
     assert sender.build()["status"] == "error"
+
+
+def test_load_metrics_summary(tmp_path):
+    path = tmp_path / "metrics_latest.json"
+    assert load_metrics_summary(path, "inbound_cam_01") is None  # no collector
+    path.write_text(json.dumps({
+        "sampled_at_epoch": 1000.0, "sampled_at_utc": "2026-10-24T20:00:00+00:00",
+        "system": {"cpu_pct": 55.5, "ssd_free_gb": 870.1},
+        "cameras": {"inbound_cam_01": {"mbps": 4.2}, "outbound_cam_01": {"mbps": 3.1}},
+    }))
+    summary = load_metrics_summary(path, "inbound_cam_01", now=1010.0)
+    assert summary == {"cpu_pct": 55.5, "ssd_free_gb": 870.1, "camera_mbps": 4.2,
+                       "sampled_at_utc": "2026-10-24T20:00:00+00:00"}
+    assert load_metrics_summary(path, "outbound_cam_01", now=1010.0)["camera_mbps"] == 3.1
+    assert load_metrics_summary(path, "inbound_cam_01", now=1100.0) is None  # stale
+    path.write_text("{not json")
+    assert load_metrics_summary(path, "inbound_cam_01", now=1010.0) is None
+
+
+def test_heartbeat_sender_attaches_metrics(tmp_path):
+    path = tmp_path / "metrics_latest.json"
+    import time as _time
+    path.write_text(json.dumps({"sampled_at_epoch": _time.time(), "system": {"cpu_pct": 12.0},
+                                "cameras": {"inbound_cam_01": {"mbps": 2.0}}}))
+    sender = HeartbeatSender("jetson-in-01", "inbound_cam_01", tmp_path / "events",
+                             send_fn=lambda hb: None, metrics_path=path)
+    metrics = sender.build()["metrics"]
+    assert metrics["cpu_pct"] == 12.0 and metrics["camera_mbps"] == 2.0
 
 
 def test_heartbeat_sender_swallows_send_errors(tmp_path, capsys):

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_FILE="/Users/mayurimurugan/research26/IR/.camera_config"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# repo-root .camera_config is also what scripts/video/config.py falls back to
+CONFIG_FILE="${CAMERA_CONFIG:-$REPO_ROOT/.camera_config}"
 
 # --- reset config if requested ---
 if [[ "${1:-}" == "--reset-config" ]]; then
@@ -30,7 +32,7 @@ EOF
 fi
 
 # --- settings ---
-OUT_DIR="$HOME/research26/IR/camera_captures"
+OUT_DIR="${CAPTURE_DIR:-$REPO_ROOT/camera_captures}"
 mkdir -p "$OUT_DIR"
 DURATION="${1:-180}"   # seconds; pass as first arg, default 3 min
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)

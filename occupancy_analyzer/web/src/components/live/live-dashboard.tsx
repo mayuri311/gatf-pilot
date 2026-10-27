@@ -260,7 +260,7 @@ export function LiveDashboard(props: LiveProps) {
           <>
             <ConnectionPill state={conn} />
             {devices.map((d) => (
-              <DeviceChip key={d.device_id} device={d} now={now} />
+              <DeviceChip key={d.camera_id ?? d.device_id} device={d} now={now} />
             ))}
           </>
         }

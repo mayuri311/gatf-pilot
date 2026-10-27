@@ -235,6 +235,10 @@ def build_event_payload(*, event_id, finalized_at, camera_id, device_id, source,
         # leave rejected_dir anyway
         "rejected": bool(rejected),
         "rejection_reason": rejection_reason,
+        # local-only too: when the plate was first/last seen, so video/clipper.py
+        # can cut the verification clip around the whole pass
+        "first_seen_utc": iso_utc(readings[0].get("captured_at_utc")),
+        "last_seen_utc": iso_utc(readings[-1].get("captured_at_utc")),
     }
 
 
@@ -317,9 +321,11 @@ def heartbeat_status(fps, nominal_fps, pending_uploads, seconds_since_last_frame
 def build_heartbeat(*, device_id, camera_id, sent_at, fps, nominal_fps,
                     last_event_at, pending_uploads, uptime_s,
                     seconds_since_last_frame, stream_open=True, message=None,
-                    app_version=APP_VERSION):
+                    app_version=APP_VERSION, metrics=None):
     """One heartbeat v1 payload (CONTRACT.md §1.2). camera_connected means the
-    stream is open AND delivered a frame within NO_FRAMES_ERROR_S."""
+    stream is open AND delivered a frame within NO_FRAMES_ERROR_S. metrics is an
+    optional edge-system snapshot (sysmetrics.py) - an additive key, so
+    schema_version stays 1 and older report_heartbeat versions just ignore it."""
     status = heartbeat_status(fps, nominal_fps, pending_uploads, seconds_since_last_frame)
     camera_connected = bool(stream_open) and status != "error"
     if message is None:
@@ -331,7 +337,7 @@ def build_heartbeat(*, device_id, camera_id, sent_at, fps, nominal_fps,
             message = f"upload backlog {pending_uploads}"
         elif status == "degraded":
             message = f"low fps ({fps:.1f} of {nominal_fps:.1f})"
-    return {
+    hb = {
         "schema_version": HEARTBEAT_SCHEMA_VERSION,
         "type": "heartbeat",
         "device_id": device_id,
@@ -346,6 +352,9 @@ def build_heartbeat(*, device_id, camera_id, sent_at, fps, nominal_fps,
         "app_version": app_version,
         "message": message,
     }
+    if metrics:
+        hb["metrics"] = metrics
+    return hb
 
 
 def supabase_credentials_configured():

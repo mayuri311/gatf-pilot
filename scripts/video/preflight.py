@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     report = Report()
-    cfg = config_mod.load(args.config)
+    cfg = config_mod.load(args.config, credentials=False)
 
     print("── tooling ─────────────────────────────────────────────")
     check_tooling(report)
@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     check_drive(report, cfg)
     if args.camera:
         print("── camera ──────────────────────────────────────────────")
-        check_camera(report, cfg, cfg.camera(args.camera))
+        check_camera(report, cfg, config_mod.with_credentials(cfg.camera(args.camera)))
 
     print()
     if report.failed:

@@ -34,17 +34,28 @@ class Camera:
     user: str = ""
     password: str = ""
     query: str = ""  # e.g. "videokeyframeinterval=30" to force a short GOP
+    # Query for the plate reader's own RTSP session, e.g. "fps=10": the reader can't
+    # keep up with full frame rate on the CPU, while the recorder keeps the full stream.
+    inference_query: str = ""
 
     @property
     def rtsp_url(self) -> str:
         """Full URL including credentials. Never log or persist this."""
+        return self._url(self.query)
+
+    @property
+    def inference_url(self) -> str:
+        """Like rtsp_url, for the plate reader's stream. Never log or persist this."""
+        return self._url(self.inference_query or self.query)
+
+    def _url(self, query: str) -> str:
         auth = ""
         if self.user:
             auth = (
                 f"{urllib.parse.quote(self.user, safe='')}:"
                 f"{urllib.parse.quote(self.password, safe='')}@"
             )
-        query = f"?{self.query}" if self.query else ""
+        query = f"?{query}" if query else ""
         return f"rtsp://{auth}{self.ip}{self.path}{query}"
 
     @property
@@ -113,10 +124,21 @@ def _resolve_credentials(cam: dict, camera_id: str) -> tuple[str, str]:
     )
 
 
+def with_credentials(camera: Camera) -> Camera:
+    """Fill in one camera's user/password (env first, then .camera_config) - so
+    opening one camera never requires the other cameras' credentials."""
+    camera.user, camera.password = _resolve_credentials(
+        {"credentials_env": camera.credentials_env}, camera.camera_id
+    )
+    return camera
+
+
 _UUID_RE = re.compile(r"^[0-9A-Za-z-]{4,64}$")
 
 
-def load(path: Path | None = None) -> RecorderConfig:
+def load(path: Path | None = None, credentials: bool = True) -> RecorderConfig:
+    """credentials=False: skip credential lookup (and leave user/password empty), for
+    tools that only need the drive UUID and camera list, never a stream."""
     path = path or DEFAULT_CONFIG
     if not path.exists():
         raise ConfigError(
@@ -136,7 +158,7 @@ def load(path: Path | None = None) -> RecorderConfig:
     for camera_id, cam in (raw.get("cameras") or {}).items():
         if not cam.get("ip"):
             raise ConfigError(f"Camera {camera_id!r} has no 'ip'.")
-        user, password = _resolve_credentials(cam, camera_id)
+        user, password = _resolve_credentials(cam, camera_id) if credentials else ("", "")
         cameras[camera_id] = Camera(
             camera_id=camera_id,
             ip=cam["ip"],
@@ -145,6 +167,7 @@ def load(path: Path | None = None) -> RecorderConfig:
             user=user,
             password=password,
             query=cam.get("query", ""),
+            inference_query=cam.get("inference_query", ""),
         )
 
     if not cameras:
@@ -167,3 +190,38 @@ def load(path: Path | None = None) -> RecorderConfig:
     if cfg.retention not in ("delete_oldest", "stop"):
         raise ConfigError("retention must be 'delete_oldest' or 'stop'")
     return cfg
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Shell helper for run_pipeline.sh: list cameras, or print one camera's URL
+    (for `export`, never for argv - the URL carries the password)."""
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Inspect recorder.config.json")
+    parser.add_argument("--config", type=Path, default=None)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--list", action="store_true", help="print '<camera_id> <ip>' per camera")
+    group.add_argument("--print-url", metavar="CAMERA_ID")
+    group.add_argument("--drive-uuid", action="store_true", help="print the configured drive UUID")
+    parser.add_argument("--inference", action="store_true",
+                        help="with --print-url: the plate reader's URL (inference_query)")
+    args = parser.parse_args(argv)
+    try:
+        cfg = load(args.config, credentials=False)
+        if args.list:
+            for cam in cfg.cameras.values():
+                print(cam.camera_id, cam.ip)
+        elif args.drive_uuid:
+            print(cfg.drive_uuid)
+        else:
+            cam = with_credentials(cfg.camera(args.print_url))
+            print(cam.inference_url if args.inference else cam.rtsp_url)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,7 +1,7 @@
 "use client";
 
 import { Camera, CameraOff, Cpu, Database, HardDrive } from "lucide-react";
-import type { Calibration, DataQuality, DeviceRow, RpcError, SystemStatus } from "@/lib/rpc";
+import type { Calibration, DataQuality, DeviceRow, EdgeMetrics, RpcError, SystemStatus } from "@/lib/rpc";
 import { cn } from "@/lib/utils";
 import { fmtAge, fmtBytes, fmtDateTime, fmtInt, fmtNum, fmtPct } from "@/lib/format";
 import { Panel, PanelBody, PanelHeader } from "@/components/common/panel";
@@ -18,6 +18,48 @@ function Row({ k, v, warn }: { k: string; v: React.ReactNode; warn?: boolean }) 
     <div className="flex items-center justify-between gap-3 border-b border-border/60 py-1.5 text-[12.5px] last:border-0">
       <dt className="text-muted-foreground">{k}</dt>
       <dd className={cn("num text-right", warn && "font-semibold text-warning")}>{v}</dd>
+    </div>
+  );
+}
+
+/** Jetson system figures from the heartbeat's metrics snapshot (scripts/sysmetrics.py). */
+function EdgeSystem({ m, now }: { m: EdgeMetrics; now: Date }) {
+  const ramPct = m.ram_used_mb != null && m.ram_total_mb ? m.ram_used_mb / m.ram_total_mb : null;
+  const ssdPct = m.ssd_free_gb != null && m.ssd_total_gb ? m.ssd_free_gb / m.ssd_total_gb : null;
+  const staleMs = m.sampled_at_utc ? now.getTime() - new Date(m.sampled_at_utc).getTime() : null;
+  return (
+    <div className="mt-4">
+      <p className="eyebrow mb-1 text-muted-foreground">
+        Edge system{staleMs != null && ` · sampled ${fmtAge(m.sampled_at_utc, now)} ago`}
+      </p>
+      <dl>
+        <Row k="CPU" v={m.cpu_pct != null ? `${fmtNum(m.cpu_pct, 0)}% avg · ${fmtNum(m.cpu_max_core_pct, 0)}% max core` : "—"} warn={(m.cpu_pct ?? 0) > 90} />
+        <Row k="GPU" v={m.gpu_pct != null ? `${fmtNum(m.gpu_pct, 0)}%` : "—"} />
+        <Row k="RAM" v={m.ram_used_mb != null ? `${fmtInt(m.ram_used_mb)} / ${fmtInt(m.ram_total_mb)} MB` : "—"} warn={(ramPct ?? 0) > 0.9} />
+        <Row k="Temperature" v={m.temp_c != null ? `${fmtNum(m.temp_c, 1)} °C` : "—"} warn={(m.temp_c ?? 0) > 85} />
+        <Row k="Power" v={m.power_w != null ? `${fmtNum(m.power_w, 1)} W` : "—"} />
+        <Row k="Camera stream" v={m.camera_mbps != null ? `${fmtNum(m.camera_mbps, 2)} Mbps` : "—"} />
+        <Row k="Camera link (all)" v={m.camera_rx_mbps != null ? `${fmtNum(m.camera_rx_mbps, 2)} Mbps rx` : "—"} />
+        <Row
+          k={`Uplink${m.uplink_iface ? ` (${m.uplink_iface})` : ""}`}
+          v={m.uplink_tx_kbps != null ? `${fmtNum(m.uplink_tx_kbps, 0)} kbps up · ${fmtNum(m.uplink_rx_kbps, 0)} down` : "—"}
+        />
+        <Row k="SSD free" v={m.ssd_free_gb != null ? `${fmtNum(m.ssd_free_gb, 0)} of ${fmtNum(m.ssd_total_gb, 0)} GB` : "—"} warn={ssdPct != null && ssdPct < 0.05} />
+        <Row
+          k="Upload spool"
+          v={m.upload_backlog != null ? `${fmtInt(m.upload_backlog)} pending${m.upload_gated ? " · waiting for CPU" : ""}` : "—"}
+          warn={(m.upload_backlog ?? 0) > 50}
+        />
+        <Row k="Clips waiting" v={fmtInt(m.clip_backlog)} warn={(m.clip_backlog ?? 0) > 20} />
+      </dl>
+      {m.upload_last_error && (
+        <p className="mt-2 truncate rounded-md bg-muted/50 px-2.5 py-1.5 text-[12px] text-muted-foreground" title={m.upload_last_error}>
+          Last upload error: {m.upload_last_error}
+        </p>
+      )}
+      {staleMs != null && staleMs > 120_000 && (
+        <p className="mt-2 text-[12px] font-semibold text-warning">Metrics are stale — is sysmetrics.py running on the Jetson?</p>
+      )}
     </div>
   );
 }
@@ -51,6 +93,7 @@ function DeviceCard({ d, now }: { d: DeviceRow; now: Date }) {
       <dl className="mt-4">
         <Row k="Last heartbeat" v={`${fmtAge(d.last_seen, now)} ago`} warn={h === "down"} />
         <Row k="Last read" v={d.last_read_at ? `${fmtAge(d.last_read_at, now)} ago` : "—"} />
+        <Row k="Last event (edge)" v={d.last_event_at ? `${fmtAge(d.last_event_at, now)} ago` : "—"} />
         <Row k="Status" v={d.status ?? "—"} warn={!!d.status && d.status !== "ok"} />
         <Row k="Camera stream" v={d.camera_connected ? "connected" : "disconnected"} warn={!d.camera_connected} />
         <Row k="FPS" v={fmtNum(d.fps, 1)} />
@@ -60,6 +103,7 @@ function DeviceCard({ d, now }: { d: DeviceRow; now: Date }) {
         <Row k="App version" v={d.app_version ?? "—"} />
       </dl>
       {d.message && <p className="mt-3 rounded-md bg-muted/50 px-2.5 py-1.5 text-[12px] text-muted-foreground">“{d.message}”</p>}
+      {d.metrics && <EdgeSystem m={d.metrics} now={now} />}
     </Panel>
   );
 }
@@ -115,7 +159,7 @@ export function HealthView({
         ) : (
           <div className="grid gap-5 md:grid-cols-2">
             {devices.data.map((d) => (
-              <DeviceCard key={d.device_id} d={d} now={now} />
+              <DeviceCard key={d.camera_id ?? d.device_id} d={d} now={now} />
             ))}
           </div>
         )}

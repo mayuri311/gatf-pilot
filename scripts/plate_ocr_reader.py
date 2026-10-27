@@ -67,6 +67,8 @@ Usage (from the repo root; camera_id/device_id must match config.yaml cameras[])
 
 import argparse
 import json
+import os
+import signal
 import sys
 import time
 import uuid
@@ -339,7 +341,7 @@ def run(source, events_dir="events", conf=0.4, show=True,
         tracker_yaml="scripts/bytetrack_plates.yaml",
         rejected_dir=None, min_plate_chars=DEFAULT_MIN_PLATE_CHARS,
         camera_id=None, device_id=None, source_start_utc=None,
-        heartbeat_interval=60, upload=True):
+        heartbeat_interval=60, upload=True, metrics_path=None):
     live = is_live_source(source)
     # never print/store the stream password - logs end up in bug reports
     safe_source = redact_source(source)
@@ -364,7 +366,8 @@ def run(source, events_dir="events", conf=0.4, show=True,
     # started before the stream opens, so a camera that never comes up is
     # still reported (status=error) instead of the device just going silent
     heartbeat = HeartbeatSender(device_id, camera_id, events_dir,
-                                interval_s=heartbeat_interval).start()
+                                interval_s=heartbeat_interval,
+                                metrics_path=metrics_path).start()
 
     def _reconnect(cap):
         """Reopen a dropped live stream, backing off up to RECONNECT_MAX_S.
@@ -493,10 +496,23 @@ def run(source, events_dir="events", conf=0.4, show=True,
     heartbeat.stop()
 
 
+def _sigterm_as_interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
+    # SIGTERM (run_pipeline.sh, systemd) takes the same path as Ctrl-C: open tracks
+    # are finalized and a last heartbeat is sent. A supervisor's background job
+    # can't be sent SIGINT reliably - bash starts it with SIGINT ignored.
+    signal.signal(signal.SIGTERM, _sigterm_as_interrupt)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--source", required=True,
-                     help="Axis RTSP URL, video file, or webcam index")
+    src_group = ap.add_mutually_exclusive_group(required=True)
+    src_group.add_argument("--source",
+                           help="Axis RTSP URL, video file, or webcam index")
+    src_group.add_argument("--source-env", metavar="VAR",
+                           help="read --source from this environment variable instead, "
+                                "so an RTSP password never shows up in `ps` "
+                                "(run_pipeline.sh uses this)")
     ap.add_argument("--camera-id", default=None,
                      help="camera_id from config.yaml cameras[] (inbound_cam_01 / "
                           "outbound_cam_01). Required unless exactly one camera's "
@@ -528,7 +544,14 @@ if __name__ == "__main__":
                      help="ByteTrack config; the plate-tuned one by default")
     ap.add_argument("--headless", action="store_true",
                      help="don't open a preview window")
+    ap.add_argument("--metrics-path", default=None,
+                     help="sysmetrics.py's metrics_latest.json - attached to each "
+                          "heartbeat as `metrics` while it's fresh")
     args = ap.parse_args()
+    if args.source_env:
+        args.source = os.environ.get(args.source_env, "")
+        if not args.source:
+            ap.error(f"--source-env: ${args.source_env} is not set")
 
     config = load_config(args.config)
     camera_id = resolve_camera_id(config, args.camera_id, args.device_id)
@@ -557,4 +580,4 @@ if __name__ == "__main__":
         camera_id=camera_id, device_id=device_id,
         source_start_utc=source_start_utc,
         heartbeat_interval=heartbeat_interval_s(config),
-        upload=not args.no_upload)
+        upload=not args.no_upload, metrics_path=args.metrics_path)
