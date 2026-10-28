@@ -107,6 +107,14 @@ preflight() {
     else
         fail ".venv missing or incomplete - python3 -m venv --system-site-packages .venv && .venv/bin/pip install --no-deps -r scripts/inductiverobo.txt"
     fi
+    # Build (first time only, a few minutes) or confirm the GPU detector engine here, so
+    # the readers never stall on it at startup. Not fatal: they fall back to the CPU.
+    local trt_out
+    if [[ -x "$PY" ]] && trt_out="$("$PY" -W ignore scripts/trt_backend.py --build 2>&1)"; then
+        ok "TensorRT detector engine ready - plate detection on the GPU"
+    else
+        warn "TensorRT unavailable - plate detection will run on the CPU ($(echo "${trt_out:-no venv}" | tail -1))"
+    fi
     command -v ffmpeg >/dev/null && ok "ffmpeg $(ffmpeg -version | head -1 | cut -d' ' -f3)" \
         || fail "ffmpeg missing (clips need it) - sudo apt install ffmpeg"
     command -v gst-launch-1.0 >/dev/null && ok "gst-launch-1.0 (clip join)" \
@@ -191,7 +199,11 @@ start_child() {
     PID[$name]=$!
     echo "  started $name (pid ${PID[$name]}) -> $LOGS/$name.log"
 }
-exec_child() { exec "$@"; }
+# Each child gets its own session/process group, so a terminal Ctrl-C reaches only
+# this script and the ordered shutdown below runs - instead of every child being
+# interrupted at once (recorders would stop before the readers' post-roll).
+# setsid doesn't fork here (we're not a group leader), so $! stays the child's pid.
+exec_child() { exec setsid "$@"; }
 
 stop_child() {  # stop_child <name> : SIGTERM, wait, SIGKILL as a last resort
     local name="$1" pid="${PID[$1]:-}"

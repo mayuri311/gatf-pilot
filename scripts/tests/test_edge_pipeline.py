@@ -10,6 +10,7 @@ when ffmpeg isn't installed. Run from the repo root:
 import json
 import shutil
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -251,3 +252,101 @@ def test_camera_bitrates(tmp_path):
     assert rates[CAM]["mbps"] == 0.8
     assert rates["outbound_cam_01"]["mbps"] is None   # nothing closed recently
     assert sysmetrics.camera_bitrates(tmp_path / "missing.db") == {}
+
+
+# --- plate reader: newest-frame grabber ---------------------------------------------
+
+class FakeCapture:
+    """A 'stream' delivering one frame (its sequence number) every `period` s."""
+
+    def __init__(self, period=0.01, fail_after=None, stall=False):
+        import threading as _t
+        self.period, self.fail_after, self.stall = period, fail_after, stall
+        self.seq, self.retrieved = 0, 0
+        self._block = _t.Event()
+
+    def grab(self):
+        if self.stall:
+            self._block.wait(2)
+            return False
+        time.sleep(self.period)
+        self.seq += 1
+        return self.fail_after is None or self.seq <= self.fail_after
+
+    def retrieve(self):
+        self.retrieved += 1
+        return True, self.seq
+
+
+def _reader_module():
+    pytest.importorskip("cv2")
+    pytest.importorskip("fast_alpr")
+    from scripts import plate_ocr_reader
+    return plate_ocr_reader
+
+
+def test_grabber_hands_out_fresh_frames_and_skips_stale():
+    por = _reader_module()
+    cap = FakeCapture(period=0.01)
+    grabber = por.LatestFrameGrabber(cap)
+    seen = []
+    for _ in range(5):
+        ok, frame, grabbed_at = grabber.read(timeout=2)
+        assert ok and grabbed_at is not None
+        seen.append(frame)
+        time.sleep(0.1)          # a slow detector: ~10 frames arrive meanwhile
+    assert grabber.stop()
+    assert seen == sorted(seen) and seen[-1] - seen[0] >= 30   # kept up with the stream
+    assert grabber.skipped >= 30                                 # stale frames dropped...
+    assert cap.retrieved <= 6                                    # ...without decoding them
+
+
+def test_grabber_reports_failure_and_stall():
+    por = _reader_module()
+    grabber = por.LatestFrameGrabber(FakeCapture(period=0.001, fail_after=0))
+    assert grabber.read(timeout=2)[0] is False
+    grabber.stop()
+    stalled = por.LatestFrameGrabber(FakeCapture(stall=True))
+    t0 = time.time()
+    assert stalled.read(timeout=0.3)[0] is False
+    assert time.time() - t0 < 1.5
+
+
+# --- TensorRT detector backend ------------------------------------------------------
+
+def test_tensorrt_detector_matches_cpu():
+    """GPU (TensorRT FP16) detections must match the CPU ones on real footage.
+    Needs TensorRT, a prebuilt engine (scripts/trt_backend.py --build) and a
+    recorded segment on the SSD - skipped otherwise (never builds in a test)."""
+    pytest.importorskip("tensorrt")
+    cv2 = pytest.importorskip("cv2")
+    pytest.importorskip("fast_alpr")
+    import glob
+    from scripts import trt_backend
+    from scripts.plate_ocr_reader import ort_session_options
+    from fast_alpr import ALPR
+    segs = sorted(glob.glob("/mnt/validation/gatf/video/*/*/*.mp4"))
+    if not segs:
+        pytest.skip("no recorded footage on the SSD")
+    alpr = ALPR(detector_model="yolo-v9-t-384-license-plate-end2end", ocr_model="cct-xs-v2-global-model",
+                detector_providers=["CPUExecutionProvider"], detector_sess_options=ort_session_options(2),
+                ocr_providers=["CPUExecutionProvider"])
+    det_onnx, _ = trt_backend.model_paths(alpr)
+    engine = trt_backend.engine_path(det_onnx)
+    if not engine.exists():
+        pytest.skip("TensorRT engine not built (scripts/trt_backend.py --build)")
+    frames = []
+    for seg in segs[-6:]:
+        cap = cv2.VideoCapture(seg)
+        ok, frame = cap.read()
+        if ok:
+            frames.append(frame)
+    det = alpr.detector.detector
+    cpu = [det.predict(f) for f in frames]
+    det.model = trt_backend.TrtSession(engine)
+    gpu = [det.predict(f) for f in frames]
+    for a, b in zip(cpu, gpu):
+        assert len(a) == len(b)
+        for x, y in zip(a, b):
+            bx, by = x.bounding_box, y.bounding_box
+            assert max(abs(bx.x1 - by.x1), abs(bx.y1 - by.y1), abs(bx.x2 - by.x2), abs(bx.y2 - by.y2)) <= 2

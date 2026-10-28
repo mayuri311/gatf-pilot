@@ -70,6 +70,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
 from collections import Counter, defaultdict
@@ -77,6 +78,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 from dotenv import load_dotenv
 from fast_alpr import ALPR
 from ultralytics.engine.results import Boxes
@@ -108,6 +110,14 @@ DEFAULT_MIN_PLATE_CHARS = 5
 # Live-stream reconnect backoff, seconds.
 RECONNECT_MIN_S = 2
 RECONNECT_MAX_S = 30
+
+# A live stream that delivers no frame for this long is treated as dropped.
+STALL_TIMEOUT_S = 15
+
+# onnxruntime threads per session. Two readers on the Orin Nano's 6 cores with
+# the default (all cores each) oversubscribe it: measured 2.8 fps per reader vs
+# 6.5-7.0 fps with 2 threads each (1080p, detector + OCR, both cameras at once).
+DEFAULT_ORT_THREADS = 2
 
 
 def validate_plate(text, min_chars=DEFAULT_MIN_PLATE_CHARS):
@@ -330,6 +340,77 @@ def open_capture(source):
     return None
 
 
+class LatestFrameGrabber:
+    """Live streams only: always hand the detector the newest frame.
+
+    cv2.VideoCapture queues every frame, so a reader slower than the stream (3.5
+    fps of a 10 fps stream under full CPU load) falls further behind real time
+    every second - measured 0.65 s per second - and stamps old frames with the
+    current wall clock. This thread grab()s continuously and only retrieve()s
+    (the costly decode-to-BGR) the frame the main loop is waiting for, so each
+    processed frame is fresh and its grab time is its real capture time.
+    """
+
+    def __init__(self, cap):
+        self.cap = cap
+        self.skipped = 0
+        self._cond = threading.Condition()
+        self._wanted = self._ready = self._failed = self._stop = False
+        self._frame = self._grabbed_at = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop:
+            ok = self.cap.grab()
+            grabbed_at = utc_now()
+            if ok:
+                with self._cond:
+                    wanted = self._wanted
+                if not wanted:
+                    self.skipped += 1
+                    continue
+                ok, frame = self.cap.retrieve()
+            with self._cond:
+                if not ok:
+                    self._failed = True
+                else:
+                    self._frame, self._grabbed_at = frame, grabbed_at
+                    self._ready, self._wanted = True, False
+                self._cond.notify_all()
+            if not ok:
+                return
+
+    def read(self, timeout=STALL_TIMEOUT_S):
+        """(ok, frame, grabbed_at_utc) for the next fresh frame; ok=False if the
+        stream failed or stalled for `timeout` seconds."""
+        with self._cond:
+            self._wanted = True
+            self._cond.wait_for(lambda: self._ready or self._failed, timeout)
+            if not self._ready:
+                self._wanted = False
+                return False, None, None
+            frame, grabbed_at = self._frame, self._grabbed_at
+            self._ready, self._frame = False, None
+            return True, frame, grabbed_at
+
+    def stop(self):
+        """Stop grabbing. Returns False if the thread is still stuck in a blocking
+        read on a dead stream - then the capture must not be released under it."""
+        self._stop = True
+        self._thread.join(timeout=5)
+        return not self._thread.is_alive()
+
+
+def ort_session_options(threads):
+    if not threads:
+        return None
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = threads
+    opts.inter_op_num_threads = 1
+    return opts
+
+
 def capture_fps(cap):
     """The capture's nominal fps, or None if it isn't believable - RTSP
     backends sometimes report 0, or the 90 kHz RTP clock, instead."""
@@ -341,7 +422,8 @@ def run(source, events_dir="events", conf=0.4, show=True,
         tracker_yaml="scripts/bytetrack_plates.yaml",
         rejected_dir=None, min_plate_chars=DEFAULT_MIN_PLATE_CHARS,
         camera_id=None, device_id=None, source_start_utc=None,
-        heartbeat_interval=60, upload=True, metrics_path=None):
+        heartbeat_interval=60, upload=True, metrics_path=None,
+        ort_threads=DEFAULT_ORT_THREADS, backend="auto"):
     live = is_live_source(source)
     # never print/store the stream password - logs end up in bug reports
     safe_source = redact_source(source)
@@ -350,11 +432,28 @@ def run(source, events_dir="events", conf=0.4, show=True,
               "live frames are stamped with the wall clock")
         source_start_utc = None
 
+    cpu = ["CPUExecutionProvider"]
     alpr = ALPR(
         detector_model="yolo-v9-t-384-license-plate-end2end",
         ocr_model="cct-xs-v2-global-model",
         detector_conf_thresh=conf,
+        detector_providers=cpu,
+        detector_sess_options=ort_session_options(ort_threads),
+        ocr_providers=cpu,
+        ocr_sess_options=ort_session_options(ort_threads),
     )
+    if backend != "cpu":
+        # plate detector on the GPU (TensorRT); OCR stays on the CPU (see trt_backend.py)
+        try:
+            from scripts.trt_backend import use_tensorrt
+            use_tensorrt(alpr)
+            print("[backend] plate detector on GPU (TensorRT FP16), OCR on CPU")
+        except Exception as e:  # anything from a missing library to a bad engine
+            if backend == "tensorrt":
+                raise
+            print(f"[backend] TensorRT unavailable ({e}) - plate detector on CPU")
+    else:
+        print("[backend] plate detector and OCR on CPU")
     tracker = build_tracker(tracker_yaml)
 
     events_dir = Path(events_dir)
@@ -395,6 +494,7 @@ def run(source, events_dir="events", conf=0.4, show=True,
         heartbeat.stop()
         raise RuntimeError(f"Could not open source: {safe_source}")
 
+    grabber = None
     track_buffers = defaultdict(list)
     finalized = []
     counts = {"accepted": 0, "rejected": 0}
@@ -435,13 +535,20 @@ def run(source, events_dir="events", conf=0.4, show=True,
                 print("[warn] video fps unknown - ignoring --source-start-utc, "
                       "frames get wall-clock capture times")
 
+        if live:
+            grabber = LatestFrameGrabber(cap)
         while True:
-            ok, frame = cap.read()
-            grabbed_at = utc_now()
+            if grabber is not None:
+                ok, frame, grabbed_at = grabber.read()
+            else:
+                ok, frame = cap.read()
+                grabbed_at = utc_now()
             if not ok:
                 if not live:
                     break  # end of the video file
-                cap = _reconnect(cap)
+                # don't release a capture the grab thread may still be blocked in
+                cap = _reconnect(cap if grabber.stop() else None)
+                grabber = LatestFrameGrabber(cap)
                 continue
             frame_index += 1
             heartbeat.note_frame()
@@ -470,8 +577,16 @@ def run(source, events_dir="events", conf=0.4, show=True,
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
     except KeyboardInterrupt:
+        # a second Ctrl-C / SIGTERM must not abort the finalize below and lose
+        # the open tracks (run_pipeline.sh kills outright if this ever hangs)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         print("\n[stop] interrupted - finalizing open tracks")
 
+    if grabber is not None:
+        if not grabber.stop():
+            cap = None  # still blocked in a read; leave the capture alone
+        print(f"[stream] analysed the newest frame each time; skipped {grabber.skipped} stale frames")
     if cap is not None:
         cap.release()
     cv2.destroyAllWindows()
@@ -497,6 +612,8 @@ def run(source, events_dir="events", conf=0.4, show=True,
 
 
 def _sigterm_as_interrupt(signum, frame):
+    # only the first signal starts the shutdown; repeats are ignored
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     raise KeyboardInterrupt
 
 
@@ -544,6 +661,12 @@ if __name__ == "__main__":
                      help="ByteTrack config; the plate-tuned one by default")
     ap.add_argument("--headless", action="store_true",
                      help="don't open a preview window")
+    ap.add_argument("--backend", choices=["auto", "tensorrt", "cpu"], default="auto",
+                     help="where the plate detector runs: auto = TensorRT on the GPU if "
+                          "available, else CPU; tensorrt = fail if it isn't")
+    ap.add_argument("--ort-threads", type=int, default=DEFAULT_ORT_THREADS,
+                     help="onnxruntime threads per model session (0 = onnxruntime "
+                          "default, all cores - oversubscribes with two readers)")
     ap.add_argument("--metrics-path", default=None,
                      help="sysmetrics.py's metrics_latest.json - attached to each "
                           "heartbeat as `metrics` while it's fresh")
@@ -580,4 +703,5 @@ if __name__ == "__main__":
         camera_id=camera_id, device_id=device_id,
         source_start_utc=source_start_utc,
         heartbeat_interval=heartbeat_interval_s(config),
-        upload=not args.no_upload, metrics_path=args.metrics_path)
+        upload=not args.no_upload, metrics_path=args.metrics_path,
+        ort_threads=args.ort_threads, backend=args.backend)
