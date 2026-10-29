@@ -33,8 +33,8 @@ ai:
   model: "gpt-5.6-terra"
 
 heartbeat:
-  interval_s: 60
-  offline_after_s: 180             # 3 missed heartbeats → "camera offline" banner
+  interval_s: 120                  # 1 GB/month AT&T IoT cap: 120 s halves heartbeat traffic
+  offline_after_s: 360             # 3 missed heartbeats → "camera offline" banner
 
 retention:
   plate_text_days: 30

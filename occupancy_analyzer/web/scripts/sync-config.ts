@@ -84,6 +84,8 @@ async function main() {
       timezone: out.lot.timezone,
       settings: {
         effective_pct: out.lot.effective_pct,
+        // engine.setting() reads this flat key for the online/offline cutoff.
+        heartbeat_offline_s: out.heartbeat.offline_after_s,
         heartbeat: out.heartbeat,
         retention: out.retention,
       },

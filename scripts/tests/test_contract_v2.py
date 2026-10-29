@@ -283,7 +283,7 @@ def test_repo_config_resolves_both_cameras():
         pytest.skip("config/config.yaml not present")
     assert c.resolve_device_id(config, "inbound_cam_01") == "jetson-in-01"
     assert c.resolve_device_id(config, "outbound_cam_01") == "jetson-out-01"
-    assert c.heartbeat_interval_s(config) == 60
+    assert c.heartbeat_interval_s(config) == 120
 
 
 def test_load_config_missing_file(tmp_path):

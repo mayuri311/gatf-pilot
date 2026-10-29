@@ -2,6 +2,7 @@
 
 import { Camera, CameraOff, Cpu, Database, HardDrive } from "lucide-react";
 import type { Calibration, DataQuality, DeviceRow, EdgeMetrics, RpcError, SystemStatus } from "@/lib/rpc";
+import { appConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
 import { fmtAge, fmtBytes, fmtDateTime, fmtInt, fmtNum, fmtPct } from "@/lib/format";
 import { Panel, PanelBody, PanelHeader } from "@/components/common/panel";
@@ -155,7 +156,7 @@ export function HealthView({
         {devices.error ? (
           <ErrorState error={devices.error} />
         ) : devices.data.length === 0 ? (
-          <EmptyState icon={Cpu} title="No heartbeats yet">Devices appear after their first heartbeat (every 60 s). Offline after 180 s of silence.</EmptyState>
+          <EmptyState icon={Cpu} title="No heartbeats yet">Devices appear after their first heartbeat (every {appConfig.heartbeat.interval_s} s). Offline after {appConfig.heartbeat.offline_after_s} s of silence.</EmptyState>
         ) : (
           <div className="grid gap-5 md:grid-cols-2">
             {devices.data.map((d) => (

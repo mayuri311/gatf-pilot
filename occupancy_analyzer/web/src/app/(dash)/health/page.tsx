@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { subDays } from "date-fns";
 import { getServerSupabase } from "@/lib/supabase/server";
 import { getSessionUser } from "@/lib/auth";
+import { appConfig } from "@/lib/config";
 import { rpc, type RpcResult } from "@/lib/rpc";
 import { PageHeader } from "@/components/common/page-header";
 import { HealthView } from "@/components/ops/health-view";
@@ -25,7 +26,10 @@ export default async function HealthPage() {
   ]);
   return (
     <>
-      <PageHeader title="System health" subtitle="Cameras from heartbeats (every 60 s, offline after 180 s), data quality and platform limits" />
+      <PageHeader
+        title="System health"
+        subtitle={`Cameras from heartbeats (every ${appConfig.heartbeat.interval_s} s, offline after ${appConfig.heartbeat.offline_after_s} s), data quality and platform limits`}
+      />
       <HealthView
         devices={r(devices, [])}
         quality={r(quality, null)}
